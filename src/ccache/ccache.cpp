@@ -756,6 +756,16 @@ do_process_preprocessed_data(Context& ctx, Hash& hash, util::Bytes&& data)
       "");
   }
 
+  // With a module mapper without entries, GCC still translates an include of a
+  // header into an import of its header unit if the CMI exists, so the CMI
+  // would be read instead of the header.
+  if (ctx.args_info.seen_fmodules_ts
+      && util::to_string_view(data).find("[[__translated]]")
+           != std::string_view::npos) {
+    LOG("Found an include translated into a header unit import");
+    return tl::unexpected(Failure(Statistic::could_not_use_modules));
+  }
+
   hash.hash(p, (end - p));
 
   return {};
@@ -1501,7 +1511,8 @@ to_cache(Context& ctx,
   ASSERT(result_key);
 
   WrittenModuleCmi module_cmi;
-  if (ctx.args_info.seen_fmodules_ts) {
+  if (ctx.args_info.seen_fmodules_ts
+      && !ctx.args_info.module_mapper_entries.empty()) {
     auto written = find_written_module_cmi(ctx, module_cmis_before);
     if (!written) {
       LOG("Cannot use modules: {}", written.error());

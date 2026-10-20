@@ -304,18 +304,6 @@ detect_pch(const std::string& option,
 std::optional<Statistic>
 process_module_mapper(const Context& ctx, ArgsInfo& args_info)
 {
-  if (!ctx.config.depend_mode() || !ctx.config.direct_mode()) {
-    LOG("C++ modules are only supported in direct depend mode");
-    return Statistic::could_not_use_modules;
-  }
-  if (!args_info.generating_dependencies) {
-    LOG("C++ modules are only supported when generating dependencies");
-    return Statistic::could_not_use_modules;
-  }
-  if (!args_info.seen_fdeps_format) {
-    LOG("C++ modules are only supported with -fdeps-format=p1689r5");
-    return Statistic::could_not_use_modules;
-  }
   if (args_info.output_is_precompiled_header) {
     // GCC writes a header unit CMI instead of a precompiled header.
     LOG("Compiling a header unit is unsupported");
@@ -354,6 +342,28 @@ process_module_mapper(const Context& ctx, ArgsInfo& args_info)
       util::pstr(util::lexically_normal(ctx.actual_cwd
                                         / core::make_relative_path(ctx, cmi)))
         .str());
+  }
+
+  // GCC fails to compile a unit that imports or provides a module not listed
+  // in a module mapper file, so a unit compiled with a module mapper without
+  // entries uses no modules. CMake passes such a module mapper for each unit
+  // without imports or exports.
+  if (args_info.module_mapper_entries.empty()) {
+    LOG("No modules in module mapper");
+    return std::nullopt;
+  }
+
+  if (!ctx.config.depend_mode() || !ctx.config.direct_mode()) {
+    LOG("C++ modules are only supported in direct depend mode");
+    return Statistic::could_not_use_modules;
+  }
+  if (!args_info.generating_dependencies) {
+    LOG("C++ modules are only supported when generating dependencies");
+    return Statistic::could_not_use_modules;
+  }
+  if (!args_info.seen_fdeps_format) {
+    LOG("C++ modules are only supported with -fdeps-format=p1689r5");
+    return Statistic::could_not_use_modules;
   }
   return std::nullopt;
 }
