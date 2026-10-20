@@ -708,6 +708,51 @@ EOF
     expect_stat cache_miss 1
 
     # -------------------------------------------------------------------------
+    TEST "Module mapper without entries"
+
+    # Like CMake's module mapper for a unit without imports or exports.
+    printf '$root .\n' >root.map
+    backdate root.map
+
+    # Units that don't use modules are cached in any mode.
+    unset CCACHE_DEPEND
+    for i in 1 2; do
+        $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=root.map -MD \
+            -fdeps-format=p1689r5 -c plain.cpp -o plain.o
+    done
+    expect_stat direct_cache_hit 1
+    expect_stat cache_miss 1
+
+    export CCACHE_NODIRECT=1
+    for i in 1 2; do
+        $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=root.map \
+            -c plain.cpp -o plain.o
+    done
+    expect_stat preprocessed_cache_hit 1
+    expect_stat cache_miss 2
+
+    # GCC fails to compile units that use modules.
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=root.map \
+        -c geom.cpp -o geom.o 2>/dev/null
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=root.map \
+        -c main.cpp -o main.o 2>/dev/null
+    expect_stat compile_failed 2
+
+    # GCC still translates an include into an import of a header unit whose CMI
+    # is in the module mapper's root directory, which is not hashed.
+    unset CCACHE_NODIRECT
+    echo 'inline int header_value() { return 4; }' >header.h
+    printf '#include "header.h"\nint value() { return header_value(); }\n' \
+        >translated.cpp
+    printf '$root gcm.cache\n' >gcm.map
+    backdate header.h translated.cpp gcm.map
+    $COMPILER -std=c++20 -fmodules-ts -fmodule-header -x c++-header -c header.h
+    expect_exists gcm.cache/,/header.h.gcm
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=gcm.map \
+        -c translated.cpp -o translated.o
+    expect_stat could_not_use_modules 1
+
+    # -------------------------------------------------------------------------
     TEST "Changed module mapper"
 
     compile_geom

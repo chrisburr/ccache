@@ -2052,6 +2052,18 @@ TEST_CASE("GCC C++ module options")
     }
   }
 
+  SUBCASE("module mapper without entries")
+  {
+    ctx.config.set_depend_mode(false);
+    ctx.config.set_direct_mode(false);
+    REQUIRE(util::write_file("root.map", "$root .\n"));
+    ctx.orig_args =
+      Args::from_string("c++ -fmodules-ts -fmodule-mapper=root.map -c foo.cpp");
+    REQUIRE(process_args(ctx));
+    CHECK(ctx.args_info.seen_fmodules_ts);
+    CHECK(ctx.args_info.module_mapper_entries.empty());
+  }
+
   SUBCASE("could not use modules without direct mode")
   {
     ctx.config.set_direct_mode(false);

@@ -1999,9 +1999,13 @@ these requirements, which are met by CMake's support for C++20 modules:
   newer.
 
 Compilations not meeting these requirements are counted as "`Could not use
-modules`". Named modules, module partitions, importing header units and writing
-only the CMI with `-fmodule-only` are supported. Compiling header units and
-`--compile-std-module` are not.
+modules`", except with a module mapper file without entries, which CMake passes
+for each unit without imports or exports. GCC fails to compile a unit using
+modules with such a module mapper, so the compilation is cached like one without
+modules, unless GCC translates an include into an import of a header unit whose
+CMI it finds in the module mapper's root directory. Named modules, module
+partitions, importing header units and writing only the CMI with `-fmodule-only`
+are supported. Compiling header units and `--compile-std-module` are not.
 
 `-fmodules` is taken to mean GCC modules if the compiler is guessed to be GCC
 (see <<config_compiler_type,*compiler_type*>>), or if `-fmodule-mapper=` is
