@@ -1995,8 +1995,10 @@ these requirements, which are met by CMake's support for C++20 modules:
 * Pass a module mapper file with `-fmodule-mapper=<file>`. The
   `CXX_MODULE_MAPPER` environment variable, mapper programs, sockets and
   `<file>?<ident>` are not supported.
-* Write a P1689 file with `-fdeps-format=p1689r5`, which requires GCC 14 or
-  newer.
+* For units importing modules, use GCC 14 or newer, which lists the CMIs of
+  imported modules in the dependency file.
+* Without `-fdeps-format=p1689r5`, don't pass `-Mno-modules`, with which GCC
+  leaves the provided module out of the dependency file.
 
 Compilations not meeting these requirements are counted as "`Could not use
 modules`", except with a module mapper file without entries, which CMake passes
@@ -2005,7 +2007,9 @@ modules with such a module mapper, so the compilation is cached like one without
 modules, unless GCC translates an include into an import of a header unit whose
 CMI it finds in the module mapper's root directory. Named modules, module
 partitions, importing header units and writing only the CMI with `-fmodule-only`
-are supported. Compiling header units and `--compile-std-module` are not.
+are supported, with or without a P1689 file written with
+`-fdeps-format=p1689r5`. Compiling header units and `--compile-std-module` are
+not.
 
 `-fmodules` is taken to mean GCC modules if the compiler is guessed to be GCC
 (see <<config_compiler_type,*compiler_type*>>), or if `-fmodule-mapper=` is
@@ -2019,16 +2023,22 @@ This is how it works:
   the working directory, source path and build time, which GCC ignores when
   importing the module, so compilations importing a module still hit after it
   is rebuilt from the same source with the same paths in another directory or
-  on another host. The P1689 file names the imported modules, whose CMIs must
-  be listed.
+  on another host. With `-fdeps-format`, the P1689 file names the imported
+  modules, whose CMIs must be listed.
 * The module mapper's root directory (`$root`) is hashed relative to
   <<config_base_dir,*base_dir*>>, but its CMI paths are hashed as written since
   GCC records the CMI paths of imported modules in the CMI it writes. A cache
   can therefore only be shared between build directories if the CMI paths in
   the module mapper are relative, as with CMake.
 * The CMI of the module provided by the compiled unit is stored in the result
-  and restored on a cache hit. The provided module is named in the P1689 file,
-  and the module mapper gives its CMI path.
+  and restored on a cache hit. The provided module is named in the P1689 file
+  with `-fdeps-format` and in the dependency file otherwise, and the module
+  mapper gives its CMI path.
+* Without `-fdeps-format`, the dependency target is hashed since it is written
+  in several rules of the dependency file. The dependency file is then
+  restored as written by the compiler, so with <<config_base_dir,*base_dir*>>
+  the default dependency target is the object file path relative to the
+  current working directory.
 
 
 == Sharing a local cache

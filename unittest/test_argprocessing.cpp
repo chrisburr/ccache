@@ -2039,7 +2039,6 @@ TEST_CASE("GCC C++ module options")
   {
     for (const auto* args :
          {"c++ -fmodules-ts -fmodule-mapper=foo.map -c foo.cpp",
-          "c++ -fmodules-ts -fmodule-mapper=foo.map -MD -c foo.cpp",
           "c++ -fmodules-ts -MD -c foo.cpp",
           "c++ -fmodules-ts '-fmodule-mapper=foo.map?ident' -MD -c foo.cpp",
           "c++ -Wp,-fmodules-ts -c foo.cpp",

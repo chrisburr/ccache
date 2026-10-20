@@ -18,10 +18,15 @@
 
 #include "gcc.hpp"
 
+#include <ccache/depfile.hpp>
+#include <ccache/util/conversion.hpp>
 #include <ccache/util/format.hpp>
+#include <ccache/util/path.hpp>
+#include <ccache/util/string.hpp>
 
 #include <algorithm>
 #include <functional>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -268,6 +273,255 @@ parse_module_mapper(std::string_view content)
     }
   }
   return mapper;
+}
+
+namespace {
+
+// Split a logical line into words at unescaped whitespace, keeping escapes.
+std::vector<std::string>
+split_words(std::string_view line)
+{
+  std::vector<std::string> words;
+  std::string word;
+  const auto flush = [&] {
+    if (!word.empty()) {
+      words.push_back(std::move(word));
+      word.clear();
+    }
+  };
+  for (size_t i = 0; i < line.size(); ++i) {
+    const char c = line[i];
+    if (c == '\\' && i + 1 < line.size()) {
+      if (line[i + 1] == '\n' || line[i + 1] == '\r') {
+        flush();
+      } else {
+        word += c;
+        word += line[i + 1];
+      }
+      ++i;
+    } else if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+      flush();
+    } else {
+      word += c;
+    }
+  }
+  flush();
+  return words;
+}
+
+std::optional<std::string>
+module_name_from_target(std::string_view word)
+{
+  for (const std::string_view suffix : {".c++-module", ".c++m"}) {
+    if (word.size() > suffix.size() && word.ends_with(suffix)) {
+      return std::string(word.substr(0, word.size() - suffix.size()));
+    }
+  }
+  return std::nullopt;
+}
+
+// Return whether a target is the name of a module or header unit.
+bool
+is_module_target(std::string_view word)
+{
+  constexpr std::string_view header_unit_suffix = ".c++-header-unit";
+  return module_name_from_target(word).has_value()
+         || (word.size() > header_unit_suffix.size()
+             && word.ends_with(header_unit_suffix));
+}
+
+enum class DepfileLine {
+  other,        // Not a rule, e.g. "CXX_IMPORTS += foo.c++-module".
+  input_rule,   // A rule with input files as prerequisites.
+  module_rule,  // "foo.c++-module: foo.gcm", .PHONY or order-only rule.
+  imports_rule, // "bar.o: foo.c++-module".
+};
+
+struct ParsedDepfileLine
+{
+  DepfileLine kind = DepfileLine::other;
+  std::vector<std::string> words;
+  size_t colon = 0; // Index of the word ending the targets.
+};
+
+ParsedDepfileLine
+parse_depfile_line(std::string_view line)
+{
+  ParsedDepfileLine result;
+  result.words = split_words(line);
+  const auto& words = result.words;
+
+  // Module names can contain unescaped colons (e.g. "foo:part.c++-module"),
+  // so find the end of the targets as the first word ending with a colon.
+  size_t colon = 0;
+  while (colon < words.size() && !words[colon].ends_with(':')
+         && !words[colon].ends_with(":|")) {
+    ++colon;
+  }
+  if (colon == words.size()) {
+    return result;
+  }
+  result.colon = colon;
+
+  const bool order_only =
+    words[colon].ends_with(":|")
+    || std::find(words.begin() + colon + 1, words.end(), "|") != words.end();
+  const std::string_view colon_word = words[colon];
+  const std::string_view last_target = colon_word.substr(
+    0, colon_word.size() - (colon_word.ends_with(":|") ? 2 : 1));
+  if (order_only || words[0] == ".PHONY:" || last_target == ".PHONY"
+      || (is_module_target(last_target)
+          && std::all_of(
+            words.begin(), words.begin() + colon, [](const auto& word) {
+              return is_module_target(word);
+            }))) {
+    result.kind = DepfileLine::module_rule;
+  } else if (colon + 1 < words.size()
+             && std::all_of(
+               words.begin() + colon + 1, words.end(), [](const auto& word) {
+                 return module_name_from_target(word).has_value();
+               })) {
+    result.kind = DepfileLine::imports_rule;
+  } else {
+    result.kind = DepfileLine::input_rule;
+  }
+  return result;
+}
+
+} // namespace
+
+bool
+is_module_depfile_line(std::string_view line)
+{
+  return parse_depfile_line(line).kind != DepfileLine::input_rule;
+}
+
+std::string
+rewrite_module_depfile_line(
+  std::string_view line,
+  const std::function<std::string(const std::string&)>& rewrite_path)
+{
+  const auto parsed = parse_depfile_line(line);
+  if ((parsed.kind != DepfileLine::module_rule
+       && parsed.kind != DepfileLine::imports_rule)
+      || parsed.words[0] == ".PHONY:") {
+    return std::string(line);
+  }
+
+  // The CMI is the prerequisite of "foo.c++-module: foo.gcm", the target of
+  // "foo.gcm:| foo.o" and a target after the dependency target of
+  // "foo.o foo.gcm: bar.c++-module". Dependency targets are kept.
+  auto words = parsed.words;
+  std::string_view first_target = words[0];
+  if (parsed.colon == 0) {
+    first_target.remove_suffix(first_target.ends_with(":|") ? 2 : 1);
+  }
+  size_t begin = 0;
+  size_t end = parsed.colon + 1;
+  if (parsed.kind == DepfileLine::imports_rule) {
+    begin = 1;
+  } else if (is_module_target(first_target)) {
+    begin = parsed.colon + 1;
+    end = words.size();
+  }
+  for (size_t i = begin; i < end; ++i) {
+    std::string_view word = words[i];
+    std::string_view suffix;
+    for (const std::string_view s : {":|", ":"}) {
+      if (word.ends_with(s)) {
+        suffix = s;
+        word.remove_suffix(s.size());
+        break;
+      }
+    }
+    if (!word.empty() && word != "|") {
+      words[i] = FMT("{}{}", rewrite_path(std::string(word)), suffix);
+    }
+  }
+  return util::join(words, " ");
+}
+
+tl::expected<ModuleDepfile, std::string>
+parse_module_depfile(std::string_view content,
+                     const ModuleMapperEntries& entries,
+                     const fs::path& cwd,
+                     const fs::path& input_file)
+{
+  const auto normal = [&](const fs::path& path) {
+    return util::lexically_normal(cwd / path);
+  };
+
+  ModuleDepfile result;
+  std::string input_rules;
+  std::vector<std::string> imported_modules;
+  for (const auto line : depfile::split_logical_lines(content)) {
+    auto parsed = parse_depfile_line(line);
+    const auto& words = parsed.words;
+    // A source file named like a module name, e.g. foo.c++m, is an input file.
+    if (parsed.kind == DepfileLine::imports_rule
+        && std::any_of(
+          words.begin() + parsed.colon + 1, words.end(), [&](const auto& word) {
+            return normal(word) == normal(input_file);
+          })) {
+      parsed.kind = DepfileLine::input_rule;
+    }
+    switch (parsed.kind) {
+    case DepfileLine::other:
+      break;
+
+    case DepfileLine::module_rule:
+      if (parsed.colon == 0 && words.size() > 1) {
+        const auto& target = words[0];
+        if (auto name =
+              module_name_from_target(target.substr(0, target.size() - 1))) {
+          result.provided_module = std::move(*name);
+        }
+      }
+      break;
+
+    case DepfileLine::imports_rule:
+      for (size_t i = parsed.colon + 1; i < words.size(); ++i) {
+        imported_modules.push_back(*module_name_from_target(words[i]));
+      }
+      break;
+
+    case DepfileLine::input_rule:
+      // Imported module names can also be listed among input files, but a
+      // source file can be named like a module name, e.g. foo.c++m.
+      input_rules += "target:";
+      for (size_t i = parsed.colon + 1; i < words.size(); ++i) {
+        const auto name = module_name_from_target(words[i]);
+        if (name && entries.contains(*name)
+            && normal(words[i]) != normal(input_file)) {
+          imported_modules.push_back(*name);
+        } else {
+          input_rules += ' ';
+          input_rules += words[i];
+        }
+      }
+      input_rules += '\n';
+      break;
+    }
+  }
+
+  result.prerequisites = depfile::prerequisites(input_rules);
+
+  std::unordered_set<std::string> listed;
+  for (const auto& prerequisite : result.prerequisites) {
+    listed.insert(normal(prerequisite).string());
+  }
+  for (const auto& name : imported_modules) {
+    const auto it = entries.find(name);
+    if (it == entries.end()) {
+      return tl::unexpected(
+        FMT("imported module {} not found in module mapper", name));
+    }
+    if (!listed.contains(normal(it->second).string())) {
+      return tl::unexpected(
+        FMT("CMI of imported module {} not listed in dependency file", name));
+    }
+  }
+  return result;
 }
 
 namespace {

@@ -183,6 +183,10 @@ struct ArgsInfo
   // Whether GCC's -fmodule-only was given, with which only the CMI is written.
   bool seen_fmodule_only = false;
 
+  // Whether GCC's -Mno-modules was given, with which the dependency file names
+  // no modules.
+  bool seen_mno_modules = false;
+
   // Module mapper file given by GCC's -fmodule-mapper=.
   std::filesystem::path module_mapper;
 

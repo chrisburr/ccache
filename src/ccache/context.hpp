@@ -70,6 +70,10 @@ public:
   // Files included by the preprocessor and their hashes.
   std::unordered_map<std::string, Hash::Digest> included_files;
 
+  // Name of the C++ module provided by the compiled unit according to the
+  // dependency file.
+  std::optional<std::string> module_provided_by_depfile;
+
   // Have we tried and failed to get colored diagnostics?
   bool diagnostics_color_failed = false;
 

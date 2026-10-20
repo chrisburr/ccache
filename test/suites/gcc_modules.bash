@@ -6,8 +6,8 @@ SUITE_gcc_modules_PROBE() {
     echo 'export module probe;' >probe.cpp
     echo 'probe probe.gcm' >probe.map
     if ! $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=probe.map \
-            -MD -fdeps-format=p1689r5 -c probe.cpp -o probe.o 2>/dev/null; then
-        echo "compiler does not support C++ modules with -fdeps-format"
+            -c probe.cpp -o probe.o 2>/dev/null; then
+        echo "compiler does not support C++ modules"
     fi
 }
 
@@ -78,7 +78,29 @@ compile_module_chain() {
     done
 }
 
+compiler_supports_fdeps_format() {
+    local dir=$(mktemp -d "$ABS_TESTDIR/probe.XXXXXX")
+    (
+        cd "$dir"
+        echo 'export module probe;' >probe.cpp
+        echo 'probe probe.gcm' >probe.map
+        $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=probe.map -MD \
+            -fdeps-format=p1689r5 -c probe.cpp -o probe.o
+    ) >/dev/null 2>&1
+    local result=$?
+    rm -rf "$dir"
+    return $result
+}
+
 SUITE_gcc_modules() {
+    # GCC 14 and newer support -fdeps-format and list the CMIs of imported
+    # modules in the dependency file. Older versions are only supported for
+    # units not importing modules.
+    if ! compiler_supports_fdeps_format; then
+        SUITE_gcc_modules_without_imported_cmis
+        return
+    fi
+
     # -------------------------------------------------------------------------
     TEST "Module interface unit is cached and its CMI is restored"
 
@@ -946,7 +968,223 @@ EOF
         -c plain.cpp -o plain.o
     expect_stat direct_cache_hit 1
 
+    SUITE_gcc_modules_without_fdeps_format
     SUITE_gcc_modules_unsupported
+}
+
+compile_geom_without_fdeps_format() {
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
+        -c geom.cpp -o geom.o "$@"
+}
+
+compile_main_without_fdeps_format() {
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=main.map -MD \
+        -c main.cpp -o main.o
+}
+
+# Without -fdeps-format, the provided module is named in the dependency file.
+SUITE_gcc_modules_without_fdeps_format() {
+    # -------------------------------------------------------------------------
+    TEST "Without -fdeps-format: module interface and importing units"
+
+    compile_geom_without_fdeps_format
+    expect_stat cache_miss 1
+    mv cmi/geom.gcm geom.gcm.reference
+    rm geom.o
+
+    compile_geom_without_fdeps_format
+    expect_stat direct_cache_hit 1
+    expect_equal_content cmi/geom.gcm geom.gcm.reference
+    backdate cmi/geom.gcm
+
+    compile_main_without_fdeps_format
+    expect_stat cache_miss 2
+    compile_main_without_fdeps_format
+    expect_stat direct_cache_hit 2
+
+    sed_in_place 's/return 1;/return 2;/' geom.cpp
+    compile_geom_without_fdeps_format
+    backdate cmi/geom.gcm
+    compile_main_without_fdeps_format
+    expect_stat direct_cache_hit 2
+    expect_stat cache_miss 4
+
+    # -------------------------------------------------------------------------
+    TEST "Without -fdeps-format: source file named like a module name"
+
+    # A source file name ending with .c++m must not be taken for a module name.
+    echo 'inline int header_value() { return 1; }' >header.h
+    cat <<'EOF' >geom.c++m
+module;
+#include "header.h"
+export module geom;
+export inline int geom_value() { return header_value(); }
+EOF
+    backdate header.h geom.c++m
+
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
+        -x c++ -c geom.c++m -o geom.o
+    expect_stat cache_miss 1
+    expect_exists cmi/geom.gcm
+
+    echo 'inline int header_value() { return 2; }' >header.h
+    backdate header.h
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
+        -x c++ -c geom.c++m -o geom.o
+    expect_stat cache_miss 2
+
+    # -------------------------------------------------------------------------
+    TEST "Without -fdeps-format: dependency file is restored as written"
+
+    for unit in geom main; do
+        for options in "" "-MT $unit.target"; do
+            $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=$unit.map \
+                -MD $options -c $unit.cpp -o $unit.o
+            backdate cmi/geom.gcm
+            mv $unit.d $unit.d.reference
+            rm $unit.o
+
+            $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=$unit.map \
+                -MD $options -c $unit.cpp -o $unit.o
+            expect_equal_content $unit.d $unit.d.reference
+        done
+    done
+    expect_stat direct_cache_hit 4
+    expect_stat cache_miss 4
+
+    # -------------------------------------------------------------------------
+    TEST "Without -fdeps-format: dependency file in another build directory"
+
+    export CCACHE_BASEDIR=$PWD
+    for dir in dir1 dir2; do
+        mkdir $dir
+        root=$PWD/$dir
+        (cd $dir && write_module_chain $root)
+    done
+    compile_chain_without_fdeps_format() {
+        for unit in c b a; do
+            $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=$unit.map \
+                -MD -c $unit.cpp -o $unit.o
+            if [ -f cmi/$unit.gcm ]; then
+                backdate cmi/$unit.gcm
+            fi
+        done
+    }
+
+    cd dir1
+    compile_chain_without_fdeps_format
+    expect_stat cache_miss 3
+
+    cd ../dir2
+    compile_chain_without_fdeps_format
+    expect_stat direct_cache_hit 3
+    for unit in c b a; do
+        mv $unit.d $unit.d.hit
+    done
+    CCACHE_RECACHE=1 compile_chain_without_fdeps_format
+    for unit in c b a; do
+        expect_equal_content $unit.d $unit.d.hit
+    done
+    if grep -q dir1 c.d.hit b.d.hit a.d.hit; then
+        test_failed "Restored dependency file refers to dir1"
+    fi
+    cd ..
+
+    # -------------------------------------------------------------------------
+    TEST "Without -fdeps-format: dependency file of a module partition"
+
+    export CCACHE_BASEDIR=$PWD
+    echo 'inline int part_header() { return 3; }' >part.h
+    cat <<'EOF' >part.cpp
+module;
+#include "part.h"
+export module geom:part;
+export inline int part_value() { return part_header(); }
+EOF
+    printf 'geom:part cmi/geom-part.gcm\n' >part.map
+    backdate part.h part.cpp part.map
+
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=part.map -MD \
+        -I$PWD -c part.cpp -o part.o
+    expect_stat cache_miss 1
+    # GCC 14 and older use the suffix .c++m.
+    if ! grep -Eq '^geom:part\.c\+\+(-module|m): cmi/geom-part\.gcm$' part.d \
+            || ! grep -Eq '^\.PHONY: geom:part\.c\+\+(-module|m)$' part.d; then
+        test_failed "Module rules not preserved in part.d: $(cat part.d)"
+    fi
+    if grep -q "$PWD/part.h" part.d; then
+        test_failed "Absolute path not made relative in part.d: $(cat part.d)"
+    fi
+
+    # -------------------------------------------------------------------------
+    TEST "Without -fdeps-format: CMI of provided module not written"
+
+    cat <<EOF >compiler.sh
+#!/bin/sh
+$COMPILER "\$@" && rm cmi/geom.gcm
+EOF
+    chmod +x compiler.sh
+    backdate compiler.sh
+
+    $CCACHE ./compiler.sh -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
+        -c geom.cpp -o geom.o
+    expect_stat could_not_use_modules 1
+
+    # -------------------------------------------------------------------------
+    TEST "Without -fdeps-format: -Mno-modules"
+
+    # GCC then names no modules in the dependency file.
+    for option in -Mno-modules -Wp,-Mno-modules "-Xpreprocessor -Mno-modules"; do
+        # shellcheck disable=SC2086
+        compile_geom_without_fdeps_format $option
+    done
+    expect_stat could_not_use_modules 3
+
+    # With -fdeps-format, the provided module is named in the P1689 file.
+    for i in 1 2; do
+        $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
+            -Mno-modules -fdeps-format=p1689r5 -c geom.cpp -o geom.o
+        expect_exists cmi/geom.gcm
+        rm cmi/geom.gcm
+    done
+    expect_stat direct_cache_hit 1
+    expect_stat cache_miss 1
+}
+
+SUITE_gcc_modules_without_imported_cmis() {
+    # -------------------------------------------------------------------------
+    TEST "Module interface unit without imports"
+
+    compile_geom_without_fdeps_format
+    expect_stat cache_miss 1
+    rm geom.o cmi/geom.gcm
+
+    compile_geom_without_fdeps_format
+    expect_stat direct_cache_hit 1
+    expect_exists cmi/geom.gcm
+
+    # -------------------------------------------------------------------------
+    TEST "Units importing modules are unsupported"
+
+    $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom.map \
+        -c geom.cpp -o geom.o
+    backdate cmi/geom.gcm
+
+    compile_main_without_fdeps_format
+    expect_stat could_not_use_modules 1
+
+    write_module_chain .
+    $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=c.map -c c.cpp -o c.o
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=b.map -MD \
+        -c b.cpp -o b.o
+    expect_stat could_not_use_modules 2
+
+    # -------------------------------------------------------------------------
+    TEST "Unsupported without depend mode"
+
+    unset CCACHE_DEPEND
+    compile_geom_without_fdeps_format
+    expect_stat could_not_use_modules 1
 }
 
 SUITE_gcc_modules_unsupported() {
@@ -962,13 +1200,6 @@ SUITE_gcc_modules_unsupported() {
 
     export CCACHE_NODIRECT=1
     compile_geom
-    expect_stat could_not_use_modules 1
-
-    # -------------------------------------------------------------------------
-    TEST "Unsupported without -fdeps-format"
-
-    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
-        -c geom.cpp -o geom.o
     expect_stat could_not_use_modules 1
 
     # -------------------------------------------------------------------------

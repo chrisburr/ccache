@@ -479,6 +479,15 @@ TEST_CASE("depfile::tokenize")
   }
 }
 
+TEST_CASE("depfile::split_logical_lines")
+{
+  CHECK(depfile::split_logical_lines("").empty());
+  CHECK(depfile::split_logical_lines("a: b \\\n c\n\nd: e")
+        == std::vector<std::string_view>{"a: b \\\n c", "d: e"});
+  CHECK(depfile::split_logical_lines("a: b \\\r\n c\r\nd: e\r\n")
+        == std::vector<std::string_view>{"a: b \\\r\n c\r", "d: e\r"});
+}
+
 TEST_CASE("depfile::prerequisites")
 {
   CHECK(depfile::prerequisites("").empty());

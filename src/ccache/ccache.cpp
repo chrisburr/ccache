@@ -375,18 +375,25 @@ absolute_normal_path(const Context& ctx, const fs::path& path)
 }
 
 // Return the input files listed in a dependency file.
-static std::vector<std::string>
-get_depfile_inputs(const Context& ctx, std::string_view content)
+static tl::expected<std::vector<std::string>, std::string>
+get_depfile_inputs(Context& ctx, std::string_view content)
 {
-  auto inputs = depfile::prerequisites(content);
-  if (ctx.args_info.seen_fmodules_ts) {
-    // The module mapper is listed but its entries are hashed separately.
-    const auto mapper = absolute_normal_path(ctx, ctx.args_info.module_mapper);
-    std::erase_if(inputs, [&](const std::string& input) {
-      return absolute_normal_path(ctx, input) == mapper;
-    });
+  if (!ctx.args_info.seen_fmodules_ts) {
+    return depfile::prerequisites(content);
   }
-  return inputs;
+
+  TRY_ASSIGN(auto depfile,
+             compiler::parse_module_depfile(content,
+                                            ctx.args_info.module_mapper_entries,
+                                            ctx.actual_cwd,
+                                            ctx.args_info.input_file));
+  ctx.module_provided_by_depfile = std::move(depfile.provided_module);
+  // The module mapper is listed but its entries are hashed separately.
+  const auto mapper = absolute_normal_path(ctx, ctx.args_info.module_mapper);
+  std::erase_if(depfile.prerequisites, [&](const std::string& prerequisite) {
+    return absolute_normal_path(ctx, prerequisite) == mapper;
+  });
+  return std::move(depfile.prerequisites);
 }
 
 // This function hashes an include file and stores the path and hash in
@@ -825,8 +832,13 @@ result_key_from_depfile(Context& ctx, Hash& hash)
     return tl::unexpected(Statistic::bad_input_file);
   }
 
-  for (const auto& input : get_depfile_inputs(ctx, *file_content)) {
-    fs::path path = core::make_relative_path(ctx, input);
+  const auto prerequisites = get_depfile_inputs(ctx, *file_content);
+  if (!prerequisites) {
+    LOG("Cannot use modules: {}", prerequisites.error());
+    return tl::unexpected(Statistic::could_not_use_modules);
+  }
+  for (const auto& prerequisite : *prerequisites) {
+    fs::path path = core::make_relative_path(ctx, prerequisite);
     TRY(remember_include_file(ctx, path, hash, false, &hash));
   }
 
@@ -1111,48 +1123,55 @@ stat_module_cmis(const Context& ctx)
 }
 
 // Find the CMI written by GCC for the module provided by the compiled unit. The
-// provided module is named in the P1689 file and its CMI path is given by the
-// module mapper.
+// provided module is named in the P1689 file with -fdeps-format and in the
+// dependency file otherwise, and its CMI path is given by the module mapper.
 static tl::expected<WrittenModuleCmi, std::string>
 find_written_module_cmi(const Context& ctx,
                         const std::unordered_map<std::string, DirEntry>& before)
 {
-  const auto content = util::read_file<std::string>(ctx.args_info.output_ddi);
-  if (!content) {
-    return tl::unexpected(
-      FMT("failed to read {}: {}", ctx.args_info.output_ddi, content.error()));
+  std::optional<std::string> provided;
+  if (ctx.args_info.seen_fdeps_format) {
+    const auto content = util::read_file<std::string>(ctx.args_info.output_ddi);
+    if (!content) {
+      return tl::unexpected(FMT(
+        "failed to read {}: {}", ctx.args_info.output_ddi, content.error()));
+    }
+    const auto modules = compiler::parse_p1689(*content);
+    if (!modules || modules->provided.size() > 1) {
+      return tl::unexpected(
+        FMT("unexpected content in {}", ctx.args_info.output_ddi));
+    }
+    TRY(check_imported_cmis_hashed(ctx, modules->required));
+    if (!modules->provided.empty()) {
+      provided = modules->provided.front();
+    }
+  } else {
+    provided = ctx.module_provided_by_depfile;
   }
-  const auto modules = compiler::parse_p1689(*content);
-  if (!modules || modules->provided.size() > 1) {
-    return tl::unexpected(
-      FMT("unexpected content in {}", ctx.args_info.output_ddi));
-  }
-  TRY(check_imported_cmis_hashed(ctx, modules->required));
-  if (modules->provided.empty()) {
+  if (!provided) {
     return WrittenModuleCmi();
   }
 
-  const auto& provided = modules->provided.front();
-  const auto it = ctx.args_info.module_mapper_entries.find(provided);
+  const auto it = ctx.args_info.module_mapper_entries.find(*provided);
   if (it == ctx.args_info.module_mapper_entries.end()) {
     return tl::unexpected(
-      FMT("provided module {} not found in module mapper", provided));
+      FMT("provided module {} not found in module mapper", *provided));
   }
   // GCC writes a new file and renames it to the CMI path, so a written CMI is
   // a different file than before compiling.
   const DirEntry de(it->second);
-  const auto& old_de = before.at(provided);
+  const auto& old_de = before.at(*provided);
   if (de.is_regular_file()
       && !(old_de.exists() && de.same_inode_as(old_de)
            && de.mtime() == old_de.mtime() && de.ctime() == old_de.ctime())) {
-    return WrittenModuleCmi(std::in_place, provided, it->second);
+    return WrittenModuleCmi(std::in_place, *provided, it->second);
   }
   // GCC does not write a CMI with -fsyntax-only.
   if (!ctx.args_info.expect_output_obj && !ctx.args_info.seen_fmodule_only) {
     return WrittenModuleCmi();
   }
   return tl::unexpected(
-    FMT("CMI {} of provided module {} not written", it->second, provided));
+    FMT("CMI {} of provided module {} not written", it->second, *provided));
 }
 
 [[nodiscard]] static bool
@@ -2143,6 +2162,15 @@ hash_common_info(const Context& ctx, const util::Args& args, Hash& hash)
   // hash -fdeps-format but don't store the P1689 file.
   if (ctx.args_info.seen_fdeps_format) {
     hash.hash_delimiter("-fdeps-format");
+  }
+  // The dependency target is written in more than one rule of a dependency file
+  // written with -fmodules-ts but without -fdeps-format, so it can't be
+  // replaced when retrieving the result.
+  if (ctx.args_info.seen_fmodules_ts && !ctx.args_info.seen_fdeps_format
+      && ctx.args_info.dependency_target) {
+    LOG("Hashing dependency target due to -fmodules-ts");
+    hash.hash_delimiter("dependency target");
+    hash.hash(*ctx.args_info.dependency_target);
   }
 
   // Whether Clang writes a CMI, whose file name may also be recorded in the
