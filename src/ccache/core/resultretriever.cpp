@@ -161,8 +161,9 @@ void
 ResultRetriever::create_parent_directory(FileType file_type,
                                          const fs::path& path) const
 {
-  // GCC creates the directory of a CMI if needed.
-  if (file_type != FileType::module_cmi || !path.has_parent_path()) {
+  // GCC creates the directory of a CMI if needed, unlike Clang.
+  if (file_type != FileType::module_cmi || m_module_cmi_path.empty()
+      || !path.has_parent_path()) {
     return;
   }
   if (auto result = fs::create_directories(path.parent_path()); !result) {
@@ -253,7 +254,10 @@ ResultRetriever::get_dest_path(FileType file_type) const
     break;
 
   case FileType::module_cmi:
-    return m_module_cmi_path;
+    // GCC's CMI follows the module name, Clang's path is given by
+    // -fmodule-output.
+    return m_module_cmi_path.empty() ? m_ctx.args_info.output_cmi
+                                     : m_module_cmi_path;
   }
 
   return {};

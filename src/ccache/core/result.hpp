@@ -107,7 +107,7 @@ enum class FileType : UnderlyingFileTypeInt {
   // looked up in the module mapper file.
   module_name = 16,
 
-  // CMI written by GCC for the C++ module being compiled.
+  // CMI written by GCC or Clang for the C++ module being compiled.
   module_cmi = 17,
 };
 

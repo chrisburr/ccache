@@ -198,6 +198,22 @@ struct ArgsInfo
   // Normalized absolute paths of the CMIs in module_mapper_entries.
   std::unordered_set<std::string> module_cmi_paths;
 
+  // Whether Clang's -fmodule-output was given without a path, which means the
+  // object file path with extension .pcm.
+  bool seen_fmodule_output = false;
+
+  // CMI (BMI in Clang's terms) written by Clang with -fmodule-output for a
+  // module interface unit.
+  std::filesystem::path output_cmi;
+
+  // Whether Clang's --precompile was given, with which Clang writes the CMI to
+  // the output file and, except Clang 21 and earlier, to the -fmodule-output
+  // path.
+  bool seen_precompile = false;
+
+  // Whether Clang may not write output_cmi, depending on its version.
+  bool output_cmi_optional = false;
+
   // Architectures from -arch options.
   std::vector<std::string> arch_args;
 

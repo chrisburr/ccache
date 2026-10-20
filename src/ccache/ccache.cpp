@@ -1160,7 +1160,8 @@ write_result(Context& ctx,
              const Hash::Digest& result_key,
              const util::Bytes& stdout_data,
              const util::Bytes& stderr_data,
-             const WrittenModuleCmi& module_cmi)
+             const WrittenModuleCmi& module_cmi,
+             bool output_cmi_written)
 {
   core::result::Serializer serializer(ctx.config);
 
@@ -1200,6 +1201,12 @@ write_result(Context& ctx,
       LOG("Module CMI {} missing", cmi);
       return false;
     }
+  }
+  if (!ctx.args_info.output_cmi.empty() && output_cmi_written
+      && !serializer.add_file(core::result::FileType::module_cmi,
+                              ctx.args_info.output_cmi)) {
+    LOG("Module CMI {} missing", ctx.args_info.output_cmi);
+    return false;
   }
   if (ctx.args_info.seen_fdeps_format
       && !serializer.add_file(core::result::FileType::p1689,
@@ -1454,6 +1461,13 @@ to_cache(Context& ctx,
   if (ctx.args_info.seen_fmodules_ts) {
     module_cmis_before = stat_module_cmis(ctx);
   }
+  // Whether Clang wrote a CMI that it may not write is told by whether the
+  // file changed.
+  DirEntry output_cmi_before;
+  if (ctx.args_info.output_cmi_optional) {
+    output_cmi_before = DirEntry(ctx.args_info.output_cmi);
+    output_cmi_before.refresh();
+  }
 
   LOG("Running real compiler");
 
@@ -1521,6 +1535,16 @@ to_cache(Context& ctx,
     module_cmi = std::move(*written);
   }
 
+  bool output_cmi_written = true;
+  if (ctx.args_info.output_cmi_optional) {
+    const DirEntry de(ctx.args_info.output_cmi);
+    output_cmi_written =
+      de.is_regular_file()
+      && !(output_cmi_before.exists() && de.same_inode_as(output_cmi_before)
+           && de.mtime() == output_cmi_before.mtime()
+           && de.ctime() == output_cmi_before.ctime());
+  }
+
   if (source_file_is_too_new(ctx, ctx.args_info.input_file)) {
     return tl::unexpected(Statistic::modified_input_file);
   }
@@ -1558,7 +1582,8 @@ to_cache(Context& ctx,
                     *result_key,
                     result->stdout_data,
                     result->stderr_data,
-                    module_cmi)) {
+                    module_cmi,
+                    output_cmi_written)) {
     return tl::unexpected(Statistic::compiler_produced_no_output);
   }
 
@@ -2118,6 +2143,14 @@ hash_common_info(const Context& ctx, const util::Args& args, Hash& hash)
   // hash -fdeps-format but don't store the P1689 file.
   if (ctx.args_info.seen_fdeps_format) {
     hash.hash_delimiter("-fdeps-format");
+  }
+
+  // Whether Clang writes a CMI, whose file name may also be recorded in the
+  // object file.
+  if (!ctx.args_info.output_cmi.empty()) {
+    hash.hash_delimiter(ctx.args_info.output_cmi_optional ? "optional CMI"
+                                                          : "CMI");
+    hash.hash(util::pstr(ctx.args_info.output_cmi.filename()).str());
   }
 
   // Hash the module files found via -fprebuilt-module-path=. An import
