@@ -214,6 +214,12 @@ ResultRetriever::get_dest_path(FileType file_type) const
 
   case FileType::sarif:
     return m_ctx.args_info.output_sarif;
+
+  case FileType::p1689:
+    if (m_ctx.args_info.seen_fdeps_format) {
+      return m_ctx.args_info.output_ddi;
+    }
+    break;
   }
 
   return {};

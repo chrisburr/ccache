@@ -1,6 +1,7 @@
 set(
   sources
   clang.cpp
+  gcc.cpp
   msvc.cpp
 )
 

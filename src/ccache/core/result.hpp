@@ -99,6 +99,9 @@ enum class FileType : UnderlyingFileTypeInt {
   // sarif output files produced by MSVC /experimental:log or GCC
   // -fdiagnostics-{add,set}-output=sarif:file=...
   sarif = 14,
+
+  // P1689 file written by GCC with -fdeps-format=p1689r5.
+  p1689 = 15,
 };
 
 const char* file_type_to_string(FileType type);
