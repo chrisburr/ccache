@@ -793,6 +793,32 @@ EOF
     expect_stat direct_cache_hit 1
 
     # -------------------------------------------------------------------------
+    TEST "Only the CMI with -fmodule-only"
+
+    # Like CMake's command for a module of an imported target, e.g. the C++
+    # standard library's.
+    printf 'geom geom.bmi\n' >bmi.map
+    backdate bmi.map
+    for i in 1 2; do
+        $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=bmi.map -MD \
+            -fdeps-format=p1689r5 -fmodule-only -c geom.cpp -o geom.bmi
+        expect_exists geom.bmi
+        expect_exists geom.d
+        expect_exists geom.ddi
+        mv geom.bmi geom.bmi.$i
+    done
+    expect_stat direct_cache_hit 1
+    expect_stat cache_miss 1
+    expect_equal_content geom.bmi.1 geom.bmi.2
+
+    # The object file is not written for an object file path other than the
+    # CMI path either.
+    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
+        -fdeps-format=p1689r5 -fmodule-only -c geom.cpp -o geom.o
+    expect_exists cmi/geom.gcm
+    expect_missing geom.o
+
+    # -------------------------------------------------------------------------
     TEST "Unit that does not use modules"
 
     $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=plain.map -MD \
@@ -960,12 +986,13 @@ SUITE_gcc_modules_unsupported() {
     TEST "Unsupported options"
 
     $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
-        -fdeps-format=p1689r5 -fmodule-only -c geom.cpp -o geom.o
-    expect_stat unsupported_compiler_option 1
-
-    $CCACHE_COMPILE -std=c++20 -fmodules-ts -fmodule-mapper=geom.map -MD \
         -fdeps-format=p1689r5 --compile-std-module -c geom.cpp -o geom.o \
         2>/dev/null
+    expect_stat unsupported_compiler_option 1
+
+    # GCC writes an object file for C with -fmodule-only.
+    echo 'int c;' >test.c
+    $CCACHE_COMPILE -fmodule-only -c test.c 2>/dev/null
     expect_stat unsupported_compiler_option 2
 
     # -------------------------------------------------------------------------

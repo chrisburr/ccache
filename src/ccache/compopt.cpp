@@ -133,7 +133,6 @@ constexpr CompOpt compopts[] = {
   {"-fbuild-session-file=",   TAKES_CONCAT_ARG | TAKES_PATH                          },
   {"-fmodule-header",         TOO_HARD                                               },
   {"-fmodule-map-file=",      TAKES_CONCAT_ARG | TAKES_PATH                          },
-  {"-fmodule-only",           TOO_HARD                                               },
   {"-fmodules-cache-path=",   TAKES_CONCAT_ARG | TAKES_PATH                          },
   {"-fno-working-directory",  AFFECTS_CPP                                            },
   {"-fplugin=libcc1plugin",   TOO_HARD                                               }, // interaction with GDB

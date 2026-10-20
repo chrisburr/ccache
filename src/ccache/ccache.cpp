@@ -1148,7 +1148,7 @@ find_written_module_cmi(const Context& ctx,
     return WrittenModuleCmi(std::in_place, provided, it->second);
   }
   // GCC does not write a CMI with -fsyntax-only.
-  if (!ctx.args_info.expect_output_obj) {
+  if (!ctx.args_info.expect_output_obj && !ctx.args_info.seen_fmodule_only) {
     return WrittenModuleCmi();
   }
   return tl::unexpected(

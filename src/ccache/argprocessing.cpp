@@ -87,6 +87,7 @@ public:
   fs::path found_Fp_file;
   bool found_valid_Fp = false;
   bool found_syntax_only = false;
+  bool found_module_only = false;
   ColorDiagnostics color_diagnostics = ColorDiagnostics::automatic;
   std::unordered_map<std::string, std::vector<std::string>> xarch_args;
   bool found_mf_opt = false;
@@ -781,6 +782,11 @@ process_option_arg(const Context& ctx,
   if (arg.starts_with("-fmodule-mapper=")) {
     args_info.module_mapper = core::make_relative_path(ctx, arg.substr(16));
     state.add_common_arg(FMT("-fmodule-mapper={}", args_info.module_mapper));
+    return Statistic::none;
+  }
+  if (arg == "-fmodule-only") {
+    state.found_module_only = true;
+    state.add_common_arg(args[i]);
     return Statistic::none;
   }
 
@@ -2336,6 +2342,18 @@ process_args(Context& ctx)
       args_info.dependency_target =
         depfile::escape_filename(util::pstr(dep_target).str());
     }
+  }
+
+  // With -fmodule-only, GCC writes no object file for C++ but the CMI of a
+  // module interface unit, like CMake asks for to build modules of imported
+  // targets such as the C++ standard library's.
+  if (state.found_module_only) {
+    if (!args_info.seen_fmodules_ts || args_info.actual_language != "c++") {
+      LOG("-fmodule-only is only supported for C++ modules");
+      return tl::unexpected(Statistic::unsupported_compiler_option);
+    }
+    args_info.seen_fmodule_only = true;
+    args_info.expect_output_obj = false;
   }
 
   if (args_info.seen_fmodules_ts) {

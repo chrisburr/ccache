@@ -1934,8 +1934,7 @@ TEST_CASE("GCC C++ module options")
   SUBCASE("unsupported")
   {
     for (const auto* args :
-         {"c++ -fmodules-ts -fmodule-mapper=foo.map -MD -fmodule-only -c "
-          "foo.cpp",
+         {"c++ -fmodule-only -c foo.cpp",
           "c++ -fmodules-ts -fmodule-mapper=foo.map -MD -fmodule-header -c "
           "foo.cpp",
           "c++ -fmodules-ts -fmodule-mapper=foo.map -MD --compile-std-module"
@@ -1945,6 +1944,19 @@ TEST_CASE("GCC C++ module options")
       CHECK(process_args(ctx).error()
             == Statistic::unsupported_compiler_option);
     }
+  }
+
+  SUBCASE("-fmodule-only")
+  {
+    ctx.orig_args = Args::from_string(
+      "c++ -fmodules-ts -fmodule-mapper=foo.map -MD -fdeps-format=p1689r5"
+      " -fmodule-only -c foo.cpp -o foo.bmi");
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.seen_fmodule_only);
+    CHECK(!ctx.args_info.expect_output_obj);
+    CHECK(result->preprocessor_args.to_string()
+          == "c++ -fmodules-ts -fmodule-mapper=foo.map -fmodule-only");
   }
 
   SUBCASE("could not use modules")

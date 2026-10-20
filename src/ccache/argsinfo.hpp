@@ -180,6 +180,9 @@ struct ArgsInfo
   // Whether GCC's -fmodules-ts was given.
   bool seen_fmodules_ts = false;
 
+  // Whether GCC's -fmodule-only was given, with which only the CMI is written.
+  bool seen_fmodule_only = false;
+
   // Module mapper file given by GCC's -fmodule-mapper=.
   std::filesystem::path module_mapper;
 
