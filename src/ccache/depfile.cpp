@@ -18,6 +18,7 @@
 
 #include "depfile.hpp"
 
+#include <ccache/compiler/gcc.hpp>
 #include <ccache/context.hpp>
 #include <ccache/core/common.hpp>
 #include <ccache/core/exceptions.hpp>
@@ -61,14 +62,16 @@ escape_filename(std::string_view filename)
   return result;
 }
 
-std::optional<std::string>
-rewrite_source_paths(const Context& ctx, std::string_view content)
-{
-  ASSERT(!ctx.config.base_dirs().empty());
+namespace {
 
+// Make paths in `tokens` relative, except the first token if `first`. Returns
+// whether any path was rewritten.
+bool
+rewrite_paths_in_tokens(const Context& ctx,
+                        std::vector<std::string>& tokens,
+                        bool& first)
+{
   bool rewritten = false;
-  bool first = true;
-  auto tokens = tokenize(content);
   for (auto& token : tokens) {
     if (first) {
       // Don't rewrite object file path.
@@ -84,9 +87,59 @@ rewrite_source_paths(const Context& ctx, std::string_view content)
       token = util::pstr(rel_path);
     }
   }
+  return rewritten;
+}
 
+} // namespace
+
+std::optional<std::string>
+rewrite_source_paths(const Context& ctx, std::string_view content)
+{
+  ASSERT(!ctx.config.base_dirs().empty());
+
+  bool first = true;
+  if (!ctx.args_info.seen_fmodules_ts) {
+    auto tokens = tokenize(content);
+    if (rewrite_paths_in_tokens(ctx, tokens, first)) {
+      return untokenize(tokens);
+    } else {
+      return std::nullopt;
+    }
+  }
+
+  // GCC's rules for C++ module names contain module names that can contain
+  // unescaped colons, so only the CMI paths in them are rewritten.
+  bool rewritten = false;
+  const auto rewrite_cmi_path = [&](const std::string& escaped) {
+    const auto tokens = tokenize(escaped);
+    if (tokens.size() != 2 || tokens[0] == ":") {
+      return escaped;
+    }
+    const auto rel_path = core::make_relative_path(ctx, tokens[0]);
+    if (rel_path == tokens[0]) {
+      return escaped;
+    }
+    rewritten = true;
+    return escape_filename(util::pstr(rel_path).str());
+  };
+  std::string result;
+  for (const auto line : split_logical_lines(content)) {
+    if (compiler::is_module_depfile_line(line)) {
+      result += compiler::rewrite_module_depfile_line(line, rewrite_cmi_path);
+      result += '\n';
+      continue;
+    }
+    auto tokens = tokenize(line);
+    if (rewrite_paths_in_tokens(ctx, tokens, first)) {
+      rewritten = true;
+      result += untokenize(tokens);
+    } else {
+      result.append(line);
+      result += '\n';
+    }
+  }
   if (rewritten) {
-    return untokenize(tokens);
+    return result;
   } else {
     return std::nullopt;
   }
@@ -229,6 +282,26 @@ tokenize(std::string_view text)
   }
 
   return tokens;
+}
+
+std::vector<std::string_view>
+split_logical_lines(std::string_view text)
+{
+  std::vector<std::string_view> lines;
+  size_t begin = 0;
+  for (size_t i = 0; i <= text.size(); ++i) {
+    // A line ending with a backslash, also before CRLF, continues.
+    const bool continued =
+      (i >= 1 && text[i - 1] == '\\')
+      || (i >= 2 && text[i - 1] == '\r' && text[i - 2] == '\\');
+    if (i == text.size() || (text[i] == '\n' && !continued)) {
+      if (i > begin) {
+        lines.push_back(text.substr(begin, i - begin));
+      }
+      begin = i + 1;
+    }
+  }
+  return lines;
 }
 
 std::vector<std::string>

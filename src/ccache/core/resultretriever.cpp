@@ -283,7 +283,11 @@ ResultRetriever::write_dependency_file(const fs::path& path,
   std::string_view str_data = util::to_string_view(data);
   size_t start_pos = 0;
   const size_t colon_pos = str_data.find(": ");
-  if (colon_pos != std::string::npos) {
+  // With -fmodules-ts but without -fdeps-format, the dependency target is part
+  // of the result key since it is also written in other rules than the first.
+  if (colon_pos != std::string::npos
+      && (!m_ctx.args_info.seen_fmodules_ts
+          || m_ctx.args_info.seen_fdeps_format)) {
     const auto obj_in_dep_file = str_data.substr(0, colon_pos);
     const auto& dep_target = *m_ctx.args_info.dependency_target;
     if (obj_in_dep_file != dep_target) {

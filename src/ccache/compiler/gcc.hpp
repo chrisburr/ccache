@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -75,6 +76,42 @@ bool is_module_mapper_file(std::string_view mapper);
 // last line without a newline is ignored.
 tl::expected<ModuleMapper, std::string>
 parse_module_mapper(std::string_view content);
+
+struct ModuleDepfile
+{
+  // Input files of the compilation.
+  std::vector<std::string> prerequisites;
+
+  // Name of the module provided by the compiled unit, if any.
+  std::optional<std::string> provided_module;
+};
+
+// Parse a dependency file written by GCC with -fmodules-ts. Besides the rule
+// for the object file, GCC adds a rule for the name of a provided module (e.g.
+// "foo.c++-module: foo.gcm", or "foo.c++m: foo.gcm" before GCC 15) marked as
+// .PHONY, an order-only rule for its CMI ("foo.gcm:| foo.o"), a rule listing
+// the names of imported modules ("bar.o: foo.c++-module") and a CXX_IMPORTS
+// variable. None of these are input files. With -fdeps-format, only the rule
+// for the object file is written. Fails if the CMI of an imported module
+// listed by name is not listed, which is the case before GCC 14.
+// `input_file` is the compiled source file and `cwd` is used to compare paths.
+tl::expected<ModuleDepfile, std::string>
+parse_module_depfile(std::string_view content,
+                     const ModuleMapperEntries& entries,
+                     const std::filesystem::path& cwd,
+                     const std::filesystem::path& input_file);
+
+// Return whether a logical line of a dependency file written by GCC with
+// -fmodules-ts is one of the rules or variables for module names described for
+// parse_module_depfile, which contain module names that are not paths.
+bool is_module_depfile_line(std::string_view line);
+
+// Return a logical line of a dependency file for which is_module_depfile_line
+// is true with the paths of CMIs replaced by `rewrite_path`, which is passed
+// and returns escaped paths. Module names and dependency targets are kept.
+std::string rewrite_module_depfile_line(
+  std::string_view line,
+  const std::function<std::string(const std::string&)>& rewrite_path);
 
 struct P1689Modules
 {

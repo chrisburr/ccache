@@ -274,6 +274,191 @@ TEST_CASE("compiler::module_cmi_digest")
   }
 }
 
+TEST_CASE("compiler::parse_module_depfile")
+{
+  compiler::ModuleMapperEntries entries{
+    {"geom",       "cmi/geom.gcm"     },
+    {"geom:part",  "cmi/geom-part.gcm"},
+    {"./header.h", "cmi/header.gcm"   },
+  };
+  const fs::path cwd = "/build";
+
+  SUBCASE("module interface unit")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "geom.o cmi/geom.gcm: geom.cpp geom.map stdc-predef.h\n"
+      "geom.c++-module: cmi/geom.gcm\n"
+      ".PHONY: geom.c++-module\n"
+      "cmi/geom.gcm:| geom.o\n",
+      entries,
+      cwd,
+      "geom.cpp");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites
+          == std::vector<std::string>{"geom.cpp", "geom.map", "stdc-predef.h"});
+    CHECK(depfile->provided_module == "geom");
+  }
+
+  SUBCASE("CRLF line endings")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "geom.o cmi/geom.gcm: geom.cpp \\\r\n a.h \\\r\n b.h\r\n"
+      "geom.c++-module: cmi/geom.gcm\r\n"
+      ".PHONY: geom.c++-module\r\n"
+      "cmi/geom.gcm:| geom.o\r\n",
+      entries,
+      cwd,
+      "geom.cpp");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites
+          == std::vector<std::string>{"geom.cpp", "a.h", "b.h"});
+    CHECK(depfile->provided_module == "geom");
+  }
+
+  SUBCASE("module partition")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "part.o cmi/geom-part.gcm: part.cpp\n"
+      "geom:part.c++-module: cmi/geom-part.gcm\n"
+      ".PHONY: geom:part.c++-module\n"
+      "cmi/geom-part.gcm:| part.o\n",
+      entries,
+      cwd,
+      "part.cpp");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites == std::vector<std::string>{"part.cpp"});
+    CHECK(depfile->provided_module == "geom:part");
+  }
+
+  SUBCASE("source file named like a module")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "geom.o cmi/geom.gcm: geom.c++m hdr.h\n"
+      "geom.c++-module: cmi/geom.gcm\n"
+      ".PHONY: geom.c++-module\n"
+      "cmi/geom.gcm:| geom.o\n",
+      entries,
+      cwd,
+      "geom.c++m");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites
+          == std::vector<std::string>{"geom.c++m", "hdr.h"});
+  }
+
+  SUBCASE("source file named like a module without other prerequisites")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "geom.o: geom.c++m\n", entries, cwd, "geom.c++m");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites == std::vector<std::string>{"geom.c++m"});
+  }
+
+  SUBCASE("importing units")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "main.o: main.cpp \\\n"
+      " " + (cwd / "cmi/geom.gcm").string() + " cmi/geom-part.gcm"
+      " cmi/header.gcm\n"
+      "main.o: geom.c++-module geom:part.c++-module ./header.h.c++-module\n"
+      "CXX_IMPORTS += geom.c++-module geom:part.c++-module"
+      " ./header.h.c++-module\n",
+      entries,
+      cwd,
+      "main.cpp");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites
+          == std::vector<std::string>{"main.cpp",
+                                      (cwd / "cmi/geom.gcm").string(),
+                                      "cmi/geom-part.gcm",
+                                      "cmi/header.gcm"});
+    CHECK(!depfile->provided_module);
+  }
+
+  SUBCASE("CMake")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "CMakeFiles/app.dir/main.cpp.o: \\\n"
+      " /src/main.cpp \\\n"
+      " CMakeFiles/app.dir/main.cpp.o.modmap /usr/include/stdc-predef.h \\\n"
+      " cmi/geom.gcm\n",
+      entries,
+      cwd,
+      "/src/main.cpp");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites
+          == std::vector<std::string>{"/src/main.cpp",
+                                      "CMakeFiles/app.dir/main.cpp.o.modmap",
+                                      "/usr/include/stdc-predef.h",
+                                      "cmi/geom.gcm"});
+  }
+
+  SUBCASE("escaped spaces")
+  {
+    const auto depfile = compiler::parse_module_depfile(
+      "main.o: main.cpp my\\ header.h\n", entries, cwd, "main.cpp");
+    REQUIRE(depfile);
+    CHECK(depfile->prerequisites
+          == std::vector<std::string>{"main.cpp", "my header.h"});
+  }
+
+  SUBCASE("imported CMI not listed")
+  {
+    // Before GCC 14, imported modules are only listed by name, also in rules
+    // with several targets.
+    CHECK(
+      !compiler::parse_module_depfile("main.o: main.cpp\n"
+                                      "main.o: geom.c++m\n"
+                                      "CXX_IMPORTS += geom.c++m\n",
+                                      entries,
+                                      cwd,
+                                      "main.cpp"));
+    CHECK(
+      !compiler::parse_module_depfile("a.o cmi/a.gcm: a.cpp geom.c++m\n"
+                                      "a.c++m: cmi/a.gcm\n",
+                                      entries,
+                                      cwd,
+                                      "a.cpp"));
+  }
+}
+
+TEST_CASE("compiler::is_module_depfile_line")
+{
+  CHECK(compiler::is_module_depfile_line("geom.c++-module: cmi/geom.gcm"));
+  CHECK(compiler::is_module_depfile_line("geom:part.c++m: cmi/geom-part.gcm"));
+  CHECK(compiler::is_module_depfile_line(".PHONY: geom:part.c++-module"));
+  CHECK(compiler::is_module_depfile_line("cmi/geom.gcm:| geom.o"));
+  CHECK(compiler::is_module_depfile_line("main.o: geom:part.c++-module"));
+  CHECK(compiler::is_module_depfile_line("CXX_IMPORTS += geom.c++-module"));
+  CHECK(!compiler::is_module_depfile_line("geom.o cmi/geom.gcm: geom.cpp"));
+  CHECK(!compiler::is_module_depfile_line("main.o: main.cpp \\\n /a/b.h"));
+  CHECK(!compiler::is_module_depfile_line("geom.o: geom.c++m geom.h"));
+  CHECK(compiler::is_module_depfile_line(
+    "./h.h.c++-module /h.h.c++-header-unit: cmi/h.gcm"));
+}
+
+TEST_CASE("compiler::rewrite_module_depfile_line")
+{
+  const auto rewrite = [](std::string_view line) {
+    return compiler::rewrite_module_depfile_line(
+      line, [](const std::string& path) { return "<" + path + ">"; });
+  };
+
+  CHECK(rewrite("geom:part.c++-module: /b/cmi/geom-part.gcm")
+        == "geom:part.c++-module: </b/cmi/geom-part.gcm>");
+  CHECK(rewrite("geom.c++-module: \\\n /b/cmi/my\\ geom.gcm")
+        == "geom.c++-module: </b/cmi/my\\ geom.gcm>");
+  CHECK(rewrite("/b/cmi/geom.gcm:| /b/geom.o")
+        == "</b/cmi/geom.gcm>:| /b/geom.o");
+  CHECK(rewrite(".PHONY: geom.c++-module") == ".PHONY: geom.c++-module");
+  CHECK(rewrite("main.o: geom.c++-module") == "main.o: geom.c++-module");
+  CHECK(rewrite("b.o /b/cmi/b.gcm: geom.c++-module")
+        == "b.o </b/cmi/b.gcm>: geom.c++-module");
+  CHECK(rewrite("./h.h.c++-module /h.h.c++-header-unit: /b/h.gcm")
+        == "./h.h.c++-module /h.h.c++-header-unit: </b/h.gcm>");
+  CHECK(rewrite("CXX_IMPORTS += geom.c++-module")
+        == "CXX_IMPORTS += geom.c++-module");
+}
+
 TEST_CASE("compiler::parse_p1689")
 {
   SUBCASE("written by GCC")

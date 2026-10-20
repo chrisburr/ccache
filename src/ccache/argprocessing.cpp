@@ -362,8 +362,10 @@ process_module_mapper(const Context& ctx, ArgsInfo& args_info)
     LOG("C++ modules are only supported when generating dependencies");
     return Statistic::could_not_use_modules;
   }
-  if (!args_info.seen_fdeps_format) {
-    LOG("C++ modules are only supported with -fdeps-format=p1689r5");
+  // Without -fdeps-format, the provided module is only named in the dependency
+  // file, which GCC omits with -Mno-modules (also when given after -Mmodules).
+  if (!args_info.seen_fdeps_format && args_info.seen_mno_modules) {
+    LOG("C++ modules are only supported with -Mno-modules and -fdeps-format");
     return Statistic::could_not_use_modules;
   }
   return std::nullopt;
@@ -810,6 +812,13 @@ process_option_arg(const Context& ctx,
               && is_module_option(args[i + 1])))) {
     LOG("Compiler option {} is unsupported with C++ modules", args[i]);
     return Statistic::could_not_use_modules;
+  }
+  if (arg == "-Mno-modules"
+      || std::find(wp_options.begin(), wp_options.end(), "-Mno-modules")
+           != wp_options.end()
+      || (arg == "-Xpreprocessor" && i + 1 < args.size()
+          && args[i + 1] == "-Mno-modules")) {
+    args_info.seen_mno_modules = true;
   }
 
   // P1689 dependency information written by GCC beside the object file.
@@ -2348,7 +2357,13 @@ process_args(Context& ctx)
     }
 
     if (!args_info.dependency_target) {
-      fs::path dep_target = args_info.orig_output_obj;
+      // A dependency file written with -fmodules-ts but without -fdeps-format
+      // is restored as written by the compiler, which gets the possibly
+      // relative object file path.
+      fs::path dep_target =
+        args_info.seen_fmodules_ts && !args_info.seen_fdeps_format
+          ? args_info.output_obj
+          : args_info.orig_output_obj;
 
       // GCC and Clang behave differently when "-Wp,-M[M]D,wp.d" is used with
       // "-o" but with neither "-MMD" nor "-MT"/"-MQ": GCC uses a dependency
