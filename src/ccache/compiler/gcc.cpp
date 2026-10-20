@@ -27,6 +27,102 @@ namespace fs = std::filesystem;
 
 namespace compiler {
 
+namespace {
+
+const std::string_view k_readme_section = ".gnu.c++.README";
+
+// Call `visitor` with the name, type and contents of each section of a GCC CMI.
+// Returns false if `data` is not laid out like a CMI.
+bool
+for_each_cmi_section(
+  std::span<const uint8_t> data,
+  const std::function<void(std::string_view name,
+                           uint32_t type,
+                           std::span<const uint8_t> contents)>& visitor)
+{
+  // GCC writes CMIs as 32-bit ELF in host byte order (see class elf in
+  // gcc/cp/module.cc).
+  constexpr uint64_t header_size = 52;
+  constexpr uint64_t section_size = 40;
+  constexpr uint64_t shn_xindex = 0xffff;
+
+  if (data.size() < header_size || data[0] != 0x7f || data[1] != 'E'
+      || data[2] != 'L' || data[3] != 'F' || data[4] != 1 /* ELFCLASS32 */
+      || (data[5] != 1 && data[5] != 2)) {
+    return false;
+  }
+  const bool little_endian = data[5] == 1;
+  const auto read_uint = [&](uint64_t offset, size_t size) -> uint64_t {
+    uint64_t value = 0;
+    for (size_t i = 0; i < size; ++i) {
+      const uint64_t byte = data[offset + (little_endian ? size - 1 - i : i)];
+      value = (value << 8) | byte;
+    }
+    return value;
+  };
+
+  const uint64_t shoff = read_uint(32, 4);
+  const uint64_t shentsize = read_uint(46, 2);
+  uint64_t shnum = read_uint(48, 2);
+  uint64_t shstrndx = read_uint(50, 2);
+  if (shentsize != section_size || shoff + section_size > data.size()) {
+    return false;
+  }
+  const auto section_field = [&](uint64_t index, uint64_t field) {
+    return read_uint(shoff + index * section_size + field, 4);
+  };
+  if (shnum == shn_xindex) {
+    shnum = section_field(0, 20);
+  }
+  if (shstrndx == shn_xindex) {
+    shstrndx = section_field(0, 24);
+  }
+  if (shnum == 0 || shstrndx >= shnum
+      || shoff + shnum * section_size > data.size()) {
+    return false;
+  }
+
+  const auto contents =
+    [&](uint64_t index) -> std::optional<std::span<const uint8_t>> {
+    const uint64_t offset = section_field(index, 16);
+    const uint64_t size = section_field(index, 20);
+    if (offset > data.size() || size > data.size() - offset) {
+      return std::nullopt;
+    }
+    return data.subspan(offset, size);
+  };
+
+  const auto strtab = contents(shstrndx);
+  if (!strtab) {
+    return false;
+  }
+  const auto names = util::to_string_view(*strtab);
+
+  std::vector<std::tuple<std::string_view, uint32_t, std::span<const uint8_t>>>
+    sections;
+  for (uint64_t i = 0; i < shnum; ++i) {
+    const uint64_t name_offset = section_field(i, 0);
+    const auto section = contents(i);
+    if (!section || name_offset >= names.size()) {
+      return false;
+    }
+    const auto name_end = names.find('\0', name_offset);
+    if (name_end == std::string_view::npos) {
+      return false;
+    }
+    sections.emplace_back(names.substr(name_offset, name_end - name_offset),
+                          static_cast<uint32_t>(section_field(i, 4)),
+                          *section);
+  }
+
+  for (const auto& [name, type, section] : sections) {
+    visitor(name, type, section);
+  }
+  return true;
+}
+
+} // namespace
+
 bool
 read_json_string(std::string_view text, size_t& pos, std::string& value)
 {
@@ -334,6 +430,25 @@ parse_p1689(std::string_view content)
     return std::nullopt;
   }
   return modules;
+}
+
+std::optional<Hash::Digest>
+module_cmi_digest(std::span<const uint8_t> data)
+{
+  Hash hash;
+  const bool ok = for_each_cmi_section(
+    data, [&](std::string_view name, uint32_t type, auto contents) {
+      hash.hash_delimiter("section");
+      hash.hash(name);
+      hash.hash(static_cast<int64_t>(type));
+      if (name != k_readme_section) {
+        hash.hash(contents);
+      }
+    });
+  if (!ok) {
+    return std::nullopt;
+  }
+  return hash.digest();
 }
 
 } // namespace compiler

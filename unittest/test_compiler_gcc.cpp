@@ -17,15 +17,99 @@
 // Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 #include <ccache/compiler/gcc.hpp>
+#include <ccache/util/format.hpp>
 
 #include <doctest/doctest.h>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
+
+namespace {
+
+// Create a CMI-like 32-bit little-endian ELF file with the given sections plus
+// a string table.
+std::vector<uint8_t>
+make_cmi(const std::vector<std::pair<std::string, std::string>>& sections)
+{
+  std::string strtab(1, '\0');
+  std::vector<uint32_t> name_offsets;
+  for (const auto& [name, contents] : sections) {
+    name_offsets.push_back(static_cast<uint32_t>(strtab.size()));
+    strtab += name;
+    strtab += '\0';
+  }
+  const auto strtab_name = static_cast<uint32_t>(strtab.size());
+  strtab += ".strtab";
+  strtab += '\0';
+
+  std::vector<uint8_t> data(52, 0);
+  const auto put = [&](size_t offset, uint32_t value, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+      data[offset + i] = static_cast<uint8_t>(value >> (8 * i));
+    }
+  };
+
+  std::vector<std::pair<uint32_t, uint32_t>> extents; // offset, size
+  extents.emplace_back(0, 0);                         // Null section
+  for (const auto& [name, contents] : sections) {
+    extents.emplace_back(static_cast<uint32_t>(data.size()),
+                         static_cast<uint32_t>(contents.size()));
+    data.insert(data.end(), contents.begin(), contents.end());
+  }
+  extents.emplace_back(static_cast<uint32_t>(data.size()),
+                       static_cast<uint32_t>(strtab.size()));
+  data.insert(data.end(), strtab.begin(), strtab.end());
+
+  const auto shoff = static_cast<uint32_t>(data.size());
+  data.resize(data.size() + extents.size() * 40, 0);
+  for (size_t i = 0; i < extents.size(); ++i) {
+    const size_t base = shoff + i * 40;
+    if (i > 0 && i <= sections.size()) {
+      put(base, name_offsets[i - 1], 4);
+      put(base + 4, 1, 4); // SHT_PROGBITS
+    } else if (i == extents.size() - 1) {
+      put(base, strtab_name, 4);
+      put(base + 4, 3, 4); // SHT_STRTAB
+    }
+    put(base + 16, extents[i].first, 4);
+    put(base + 20, extents[i].second, 4);
+  }
+
+  data[0] = 0x7f;
+  data[1] = 'E';
+  data[2] = 'L';
+  data[3] = 'F';
+  data[4] = 1; // ELFCLASS32
+  data[5] = 1; // ELFDATA2LSB
+  data[6] = 1; // EV_CURRENT
+  put(32, shoff, 4);
+  put(40, 52, 2);
+  put(46, 40, 2);
+  put(48, static_cast<uint32_t>(extents.size()), 2);
+  put(50, static_cast<uint32_t>(extents.size() - 1), 2);
+  return data;
+}
+
+std::string
+readme(std::string_view module, std::string_view source, std::string_view cwd)
+{
+  std::string result = "GNU C++ primary interface";
+  result += '\0';
+  for (const auto& line : {FMT("module: {}", module),
+                           FMT("source: {}", source),
+                           FMT("cwd: {}", cwd)}) {
+    result += line;
+    result += '\0';
+  }
+  return result;
+}
+
+} // namespace
 
 TEST_SUITE_BEGIN("compiler::gcc");
 
@@ -138,6 +222,55 @@ TEST_CASE("compiler::parse_module_mapper")
   {
     CHECK(!compiler::parse_module_mapper("foo\n"));
     CHECK(!compiler::parse_module_mapper("$other dir\n"));
+  }
+}
+
+TEST_CASE("compiler::module_cmi_digest")
+{
+  const auto cmi = make_cmi({
+    {".gnu.c++.README", readme("geom", "geom.cpp", "/a")},
+    {".gnu.c++.cfg", "config"},
+  });
+
+  SUBCASE("README section is ignored")
+  {
+    const auto other = make_cmi({
+      {".gnu.c++.README", readme("geom", "geom.cpp", "/longer/path")},
+      {".gnu.c++.cfg", "config"},
+    });
+    REQUIRE(compiler::module_cmi_digest(cmi));
+    CHECK(compiler::module_cmi_digest(cmi)
+          == compiler::module_cmi_digest(other));
+  }
+
+  SUBCASE("other sections are not ignored")
+  {
+    const auto other = make_cmi({
+      {".gnu.c++.README", readme("geom", "geom.cpp", "/a")},
+      {".gnu.c++.cfg", "CONFIG"},
+    });
+    CHECK(compiler::module_cmi_digest(cmi)
+          != compiler::module_cmi_digest(other));
+  }
+
+  SUBCASE("malformed data")
+  {
+    CHECK(!compiler::module_cmi_digest({}));
+    CHECK(!compiler::module_cmi_digest(
+      std::span<const uint8_t>(cmi.data(), cmi.size() - 1)));
+
+    auto bad_offset = cmi;
+    bad_offset[cmi.size() - 2 * 40 + 16] = 0xff; // .gnu.c++.cfg offset
+    bad_offset[cmi.size() - 2 * 40 + 19] = 0xff;
+    CHECK(!compiler::module_cmi_digest(bad_offset));
+
+    auto not_elf = cmi;
+    not_elf[1] = 'X';
+    CHECK(!compiler::module_cmi_digest(not_elf));
+
+    auto elf64 = cmi;
+    elf64[4] = 2;
+    CHECK(!compiler::module_cmi_digest(elf64));
   }
 }
 

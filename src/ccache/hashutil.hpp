@@ -83,9 +83,16 @@ bool hash_binary_file(const Context& ctx,
 // Return whether `path` is a GCC compiled module interface (CMI) read by a
 // compilation using C++20 modules, i.e. a module mapper entry or a file named
 // *.gcm. CMIs of indirectly imported modules need not be in the module mapper.
-// A CMI not recognized is hashed like a source file, which only differs in
-// scanning for temporal macros.
+// A mistake only affects the hit rate: a CMI not recognized is hashed like a
+// source file, and a file not laid out like a CMI is hashed as a whole.
 bool is_module_cmi(const Context& ctx, const std::filesystem::path& path);
+
+// Hash a GCC compiled module interface file (using the inode cache if enabled)
+// without its README section. The README section contains the working
+// directory, source path and build time, and GCC does not consider it when
+// checking whether a CMI matches.
+std::optional<Hash::Digest> hash_module_cmi_file(
+  const Context& ctx, const std::filesystem::path& path, size_t size_hint = 0);
 
 // Hash the output of `command` (not executed via a shell). A "%compiler%"
 // string in `command` will be replaced with `compiler`.

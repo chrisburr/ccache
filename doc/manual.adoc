@@ -2015,8 +2015,12 @@ named `gcc` that is Clang, like on macOS, therefore doesn't cache Clang modules.
 This is how it works:
 
 * The CMIs of imported modules listed in the dependency file are hashed like
-  include files. The P1689 file names the imported modules, whose CMIs must be
-  listed.
+  include files, except for their README section. The README section contains
+  the working directory, source path and build time, which GCC ignores when
+  importing the module, so compilations importing a module still hit after it
+  is rebuilt from the same source with the same paths in another directory or
+  on another host. The P1689 file names the imported modules, whose CMIs must
+  be listed.
 * The module mapper's root directory (`$root`) is hashed relative to
   <<config_base_dir,*base_dir*>>, but its CMI paths are hashed as written since
   GCC records the CMI paths of imported modules in the CMI it writes. A cache

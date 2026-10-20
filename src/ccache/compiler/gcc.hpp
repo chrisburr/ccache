@@ -18,11 +18,15 @@
 
 #pragma once
 
+#include <ccache/hash.hpp>
+
 #include <tl/expected.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -85,5 +89,11 @@ struct P1689Modules
 // Parse a P1689 file written by GCC with -fdeps-format=p1689r5. Returns
 // std::nullopt if `content` is not valid JSON in that format.
 std::optional<P1689Modules> parse_p1689(std::string_view content);
+
+// Return the digest of a GCC CMI without its README section, or std::nullopt if
+// `data` is not laid out like a CMI. The README section contains the working
+// directory, source path and build time, and GCC does not consider it when
+// checking whether a CMI matches.
+std::optional<Hash::Digest> module_cmi_digest(std::span<const uint8_t> data);
 
 } // namespace compiler

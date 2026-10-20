@@ -397,7 +397,12 @@ Manifest::result_matches(
     }
     const FileStats& fs = stated_files_iter->second;
 
-    if (fs.size != fi.fsize) {
+    // The size of a compiled module interface depends on its README section,
+    // which is not hashed, so a size mismatch only means that it must be
+    // hashed.
+    const bool module_cmi = is_module_cmi(ctx, path);
+    const bool same_size = fs.size == fi.fsize;
+    if (!same_size && !module_cmi) {
       LOG("Mismatch for {}: size {} != {}", path, fs.size, fi.fsize);
       return false;
     }
@@ -415,14 +420,14 @@ Manifest::result_matches(
     if (ctx.config.sloppiness().contains(core::Sloppy::file_stat_matches)) {
       if (!ctx.config.sloppiness().contains(
             core::Sloppy::file_stat_matches_ctime)) {
-        if (fi.mtime == fs.mtime && fi.ctime == fs.ctime) {
+        if (same_size && fi.mtime == fs.mtime && fi.ctime == fs.ctime) {
           LOG("mtime/ctime hit for {}", path);
           continue;
         } else {
           LOG("mtime/ctime miss for {}", path);
         }
       } else {
-        if (fi.mtime == fs.mtime) {
+        if (same_size && fi.mtime == fs.mtime) {
           LOG("mtime hit for {}", path);
           continue;
         } else {
@@ -433,9 +438,8 @@ Manifest::result_matches(
 
     auto hashed_files_iter = hashed_files.find(path);
     if (hashed_files_iter == hashed_files.end()) {
-      // CMIs are binary files, see remember_include_file.
-      auto actual_digest = is_module_cmi(ctx, path)
-                             ? hash_binary_file(ctx, path, fs.size)
+      auto actual_digest = module_cmi
+                             ? hash_module_cmi_file(ctx, path, fs.size)
                              : hash_source_code_file(ctx, path, fs.size);
       if (!actual_digest) {
         LOG("Failed hashing {}", path);
