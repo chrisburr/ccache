@@ -1069,6 +1069,12 @@ write_result(Context& ctx,
     LOG("Module CMI {} missing", ctx.args_info.output_cmi);
     return false;
   }
+  if (ctx.args_info.seen_fdeps_format
+      && !serializer.add_file(core::result::FileType::p1689,
+                              ctx.args_info.output_ddi)) {
+    LOG("P1689 file {} missing", ctx.args_info.output_ddi);
+    return false;
+  }
   if (ctx.args_info.generating_coverage) {
     const auto coverage_file = find_coverage_file(ctx);
     if (!coverage_file.found) {
@@ -1953,6 +1959,12 @@ hash_common_info(const Context& ctx, const util::Args& args, Hash& hash)
     if (!hash_binary_file(ctx, hash, module_file)) {
       return tl::unexpected(Statistic::bad_input_file);
     }
+  }
+
+  // Keep results apart from those stored by earlier ccache versions, which also
+  // hash -fdeps-format but don't store the P1689 file.
+  if (ctx.args_info.seen_fdeps_format) {
+    hash.hash_delimiter("-fdeps-format");
   }
 
   // Whether Clang writes a CMI, whose file name may also be recorded in the

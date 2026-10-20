@@ -167,6 +167,15 @@ struct ArgsInfo
   // Files found by searching the directories given by -fprebuilt-module-path=.
   std::vector<std::filesystem::path> searched_module_files;
 
+  // Whether GCC's -fdeps-format=p1689r5 was given.
+  bool seen_fdeps_format = false;
+
+  // Whether GCC's -fdeps-target= was given.
+  bool seen_fdeps_target = false;
+
+  // P1689 file written by GCC with -fdeps-format.
+  std::filesystem::path output_ddi;
+
   // Whether Clang's -fmodule-output was given without a path, which means the
   // object file path with extension .pcm.
   bool seen_fmodule_output = false;

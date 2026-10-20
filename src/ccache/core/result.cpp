@@ -165,6 +165,9 @@ file_type_to_string(FileType type)
 
   case FileType::module_cmi:
     return ".cmi";
+
+  case FileType::p1689:
+    return ".ddi";
   }
 
   return k_unknown_file_type;

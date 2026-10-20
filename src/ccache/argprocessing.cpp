@@ -19,6 +19,7 @@
 #include "argprocessing.hpp"
 
 #include <ccache/argsinfo.hpp>
+#include <ccache/compiler/gcc.hpp>
 #include <ccache/compopt.hpp>
 #include <ccache/context.hpp>
 #include <ccache/core/common.hpp>
@@ -685,6 +686,32 @@ process_option_arg(const Context& ctx,
   if (arg == "--precompile") {
     args_info.seen_precompile = true;
     state.add_common_arg(args[i]);
+    return Statistic::none;
+  }
+
+  // P1689 dependency information written by GCC beside the object file.
+  if (arg.starts_with("-fdeps-format=")) {
+    if (arg != "-fdeps-format=p1689r5") {
+      LOG("Compiler option {} is unsupported", args[i]);
+      return Statistic::unsupported_compiler_option;
+    }
+    args_info.seen_fdeps_format = true;
+    state.add_compiler_only_arg(args[i]);
+    return Statistic::none;
+  }
+  if (arg.starts_with("-fdeps-target=")) {
+    args_info.seen_fdeps_target = true;
+    state.add_compiler_only_arg(args[i]);
+    return Statistic::none;
+  }
+  if (arg.starts_with("-fdeps-file=")) {
+    if (arg == "-fdeps-file=-") {
+      LOG("Compiler option {} is unsupported", args[i]);
+      return Statistic::unsupported_compiler_option;
+    }
+    args_info.output_ddi = core::make_relative_path(ctx, arg.substr(12));
+    state.add_compiler_only_arg_no_hash(
+      FMT("-fdeps-file={}", args_info.output_ddi));
     return Statistic::none;
   }
 
@@ -2131,8 +2158,10 @@ process_args(Context& ctx)
 
   if (args_info.actual_language == "assembler"
       || args_info.actual_language == "ir") {
-    // -MD/-MMD do not produce a dependency file.
+    // -MD/-MMD do not produce a dependency file and -fdeps-format no P1689
+    // file.
     args_info.generating_dependencies = false;
+    args_info.seen_fdeps_format = false;
   }
 
   args_info.preprocess_input_file = !language_info->preprocessed;
@@ -2271,6 +2300,22 @@ process_args(Context& ctx)
   }
   if (args_info.seen_precompile) {
     args_info.output_cmi_optional = true;
+  }
+
+  // Like GCC's driver, which passes -fdeps-file=<output with suffix .ddi>.
+  if (args_info.seen_fdeps_format && args_info.output_ddi.empty()) {
+    args_info.output_ddi = compiler::with_spec_suffix(
+      util::pstr(args_info.output_obj).str(), ".ddi");
+  }
+
+  // Without -fdeps-target=, GCC writes the object file path with suffix .o in
+  // the P1689 file. Pass it explicitly to derive it from the object file path
+  // given to ccache rather than the one made relative to base_dir.
+  if (args_info.seen_fdeps_format && !args_info.seen_fdeps_target) {
+    state.add_compiler_only_arg(
+      FMT("-fdeps-target={}",
+          compiler::with_spec_suffix(
+            util::pstr(args_info.orig_output_obj).str(), ".o")));
   }
 
   if (args_info.generating_stackusage) {

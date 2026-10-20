@@ -170,6 +170,14 @@ generate_code() {
     done
 }
 
+native_path() {
+    if $HOST_OS_WINDOWS; then
+        cygpath -m "$1"
+    else
+        echo "$1"
+    fi
+}
+
 file_storage_url() {
     if $HOST_OS_WINDOWS; then
         echo "file:///$(cygpath -m "$1")"

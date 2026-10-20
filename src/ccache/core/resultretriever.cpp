@@ -217,6 +217,12 @@ ResultRetriever::get_dest_path(FileType file_type) const
 
   case FileType::module_cmi:
     return m_ctx.args_info.output_cmi;
+
+  case FileType::p1689:
+    if (m_ctx.args_info.seen_fdeps_format) {
+      return m_ctx.args_info.output_ddi;
+    }
+    break;
   }
 
   return {};

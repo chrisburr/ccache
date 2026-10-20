@@ -1832,4 +1832,75 @@ TEST_CASE("Clang -fmodule-output options")
   }
 }
 
+TEST_CASE("GCC -fdeps-format options")
+{
+  TestContext test_context;
+
+  Context ctx;
+  ctx.config.set_compiler_type(CompilerType::gcc);
+  ctx.config.set_base_dir(get_root());
+  REQUIRE(util::write_file("foo.cpp", ""));
+  REQUIRE(fs::create_directories("out"));
+
+  SUBCASE("default P1689 file")
+  {
+    ctx.orig_args = Args::from_string(
+      "c++ -std=c++20 -MD -fdeps-format=p1689r5 -c foo.cpp -o out/foo.o");
+
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.seen_fdeps_format);
+    CHECK(!ctx.args_info.seen_fdeps_target);
+    CHECK(ctx.args_info.output_ddi == "out/foo.ddi");
+    CHECK(result->preprocessor_args.to_string() == "c++ -std=c++20");
+    CHECK(result->extra_args_to_hash.to_string()
+          == "-MD -fdeps-format=p1689r5 -fdeps-target=out/foo.o");
+  }
+
+  SUBCASE("absolute object file path")
+  {
+    ctx.orig_args = Args::from_string(FMT(
+      "c++ -std=c++20 -MD -fdeps-format=p1689r5 -c foo.cpp -o {}/out/foo.obj",
+      ctx.actual_cwd));
+
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.output_ddi == "out/foo.ddi");
+    CHECK(result->extra_args_to_hash.to_string()
+          == FMT("-MD -fdeps-format=p1689r5 -fdeps-target={}/out/foo.o",
+                 ctx.actual_cwd));
+  }
+
+  SUBCASE("-fdeps-file and -fdeps-target")
+  {
+    ctx.orig_args = Args::from_string(
+      FMT("c++ -std=c++20 -MD -fdeps-format=p1689r5 -fdeps-target=foo.o"
+          " -fdeps-file={}/out/foo.json -c foo.cpp",
+          ctx.actual_cwd));
+
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.seen_fdeps_target);
+    CHECK(ctx.args_info.output_ddi == fs::path("out") / "foo.json");
+    CHECK(result->preprocessor_args.to_string() == "c++ -std=c++20");
+    CHECK(result->extra_args_to_hash.to_string()
+          == "-MD -fdeps-format=p1689r5 -fdeps-target=foo.o");
+    CHECK(result->compiler_args.to_string().find(
+            FMT(" -fdeps-file={} ", ctx.args_info.output_ddi))
+          != std::string::npos);
+  }
+
+  SUBCASE("unsupported")
+  {
+    for (const auto* args :
+         {"c++ -MD -fdeps-format=p1689r5 -fdeps-file=- -c foo.cpp",
+          "c++ -MD -fdeps-format=other -c foo.cpp"}) {
+      CAPTURE(args);
+      ctx.orig_args = Args::from_string(args);
+      CHECK(process_args(ctx).error()
+            == Statistic::unsupported_compiler_option);
+    }
+  }
+}
+
 TEST_SUITE_END();
