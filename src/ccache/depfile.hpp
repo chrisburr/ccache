@@ -41,6 +41,9 @@ make_paths_relative_in_output_dep(const Context& ctx);
 // dependency tokens. An empty token marks the end of an entry.
 std::vector<std::string> tokenize(std::string_view text);
 
+// Return the prerequisites of the rules in `text`.
+std::vector<std::string> prerequisites(std::string_view text);
+
 // Return text from `tokens` that originate from `tokenize`.
 std::string untokenize(const std::vector<std::string>& tokens);
 
