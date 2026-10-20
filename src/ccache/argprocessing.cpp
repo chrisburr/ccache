@@ -28,6 +28,7 @@
 #include <ccache/util/args.hpp>
 #include <ccache/util/assertions.hpp>
 #include <ccache/util/direntry.hpp>
+#include <ccache/util/file.hpp>
 #include <ccache/util/filesystem.hpp>
 #include <ccache/util/format.hpp>
 #include <ccache/util/logging.hpp>
@@ -294,6 +295,67 @@ detect_pch(const std::string& option,
     state.found_pch = true;
   }
   return true;
+}
+
+// GCC finds the CMIs of imported modules and where to write the CMI of the
+// module being compiled through the module mapper. The CMIs that are read are
+// listed in the dependency file, so they are hashed like include files in
+// depend mode. The CMI written by the compiler is stored in the result.
+std::optional<Statistic>
+process_module_mapper(const Context& ctx, ArgsInfo& args_info)
+{
+  if (!ctx.config.depend_mode() || !ctx.config.direct_mode()) {
+    LOG("C++ modules are only supported in direct depend mode");
+    return Statistic::could_not_use_modules;
+  }
+  if (!args_info.generating_dependencies) {
+    LOG("C++ modules are only supported when generating dependencies");
+    return Statistic::could_not_use_modules;
+  }
+  if (!args_info.seen_fdeps_format) {
+    LOG("C++ modules are only supported with -fdeps-format=p1689r5");
+    return Statistic::could_not_use_modules;
+  }
+  if (args_info.output_is_precompiled_header) {
+    // GCC writes a header unit CMI instead of a precompiled header.
+    LOG("Compiling a header unit is unsupported");
+    return Statistic::could_not_use_modules;
+  }
+
+  const auto mapper = util::pstr(args_info.module_mapper).str();
+  if (!compiler::is_module_mapper_file(mapper)) {
+    LOG(
+      "C++ modules are only supported with -fmodule-mapper=<file>, got \"{}\"",
+      mapper);
+    return Statistic::could_not_use_modules;
+  }
+
+  const auto content = util::read_file<std::string>(args_info.module_mapper);
+  if (!content) {
+    LOG("Failed to read module mapper {}: {}",
+        args_info.module_mapper,
+        content.error());
+    return Statistic::could_not_use_modules;
+  }
+  const auto parsed_mapper = compiler::parse_module_mapper(*content);
+  if (!parsed_mapper) {
+    LOG("Failed to parse module mapper {}: {}",
+        args_info.module_mapper,
+        parsed_mapper.error());
+    return Statistic::could_not_use_modules;
+  }
+  args_info.module_mapper_entries = parsed_mapper->cmi_paths();
+  args_info.module_mapper_root = parsed_mapper->root;
+  args_info.module_mapper_written_entries = parsed_mapper->entries;
+  for (const auto& [name, cmi] : args_info.module_mapper_entries) {
+    // Like the paths in the dependency file, the CMI path is made relative to
+    // base_dir first.
+    args_info.module_cmi_paths.insert(
+      util::pstr(util::lexically_normal(ctx.actual_cwd
+                                        / core::make_relative_path(ctx, cmi)))
+        .str());
+  }
+  return std::nullopt;
 }
 
 bool
@@ -683,6 +745,52 @@ process_option_arg(const Context& ctx,
     return Statistic::none;
   }
 
+  // GCC C++20 modules. Only supported with a module mapper file in depend mode,
+  // see process_module_mapper. GCC 15 also accepts -fmodules as an alias, which
+  // means Clang modules for Clang (see below), so it's taken to mean GCC
+  // modules only with a module mapper. A compiler guessed to be GCC may be
+  // Clang, like gcc on macOS.
+  const bool clang_type = config.compiler_type() == CompilerType::clang
+                          || config.compiler_type() == CompilerType::clang_cl;
+  const auto gcc_fmodules = [&] {
+    return !clang_type
+           && std::any_of(args.begin(), args.end(), [](const auto& a) {
+                return std::string_view(a).starts_with("-fmodule-mapper=");
+              });
+  };
+  if (arg == "-fmodules-ts" || (arg == "-fmodules" && gcc_fmodules())) {
+    args_info.seen_fmodules_ts = true;
+    state.add_common_arg(args[i]);
+    return Statistic::none;
+  }
+  if (arg == "-fno-modules-ts" || (arg == "-fno-modules" && gcc_fmodules())) {
+    args_info.seen_fmodules_ts = false;
+    state.add_common_arg(args[i]);
+    return Statistic::none;
+  }
+  if (arg.starts_with("-fmodule-mapper=")) {
+    args_info.module_mapper = core::make_relative_path(ctx, arg.substr(16));
+    state.add_common_arg(FMT("-fmodule-mapper={}", args_info.module_mapper));
+    return Statistic::none;
+  }
+
+  // GCC also enables modules for module options given via -Wp, or
+  // -Xpreprocessor. For Clang, they only disable the direct mode (see below).
+  const auto is_module_option = [](std::string_view option) {
+    return option.starts_with("-fmodule") || option.starts_with("-fno-module");
+  };
+  const auto wp_options =
+    arg.starts_with("-Wp,")
+      ? util::split_into_views(std::string_view(arg).substr(4), ",")
+      : std::vector<std::string_view>();
+  if (!clang_type
+      && (std::any_of(wp_options.begin(), wp_options.end(), is_module_option)
+          || (arg == "-Xpreprocessor" && i + 1 < args.size()
+              && is_module_option(args[i + 1])))) {
+    LOG("Compiler option {} is unsupported with C++ modules", args[i]);
+    return Statistic::could_not_use_modules;
+  }
+
   // P1689 dependency information written by GCC beside the object file.
   if (arg.starts_with("-fdeps-format=")) {
     if (arg != "-fdeps-format=p1689r5") {
@@ -711,7 +819,8 @@ process_option_arg(const Context& ctx,
 
   // These are always too hard.
   if (compopt_too_hard(arg) || arg.starts_with("-fdump-")
-      || arg.starts_with("-MJ") || arg.starts_with("--config-system-dir=")
+      || arg.starts_with("-fmodule-header=") || arg.starts_with("-MJ")
+      || arg.starts_with("--config-system-dir=")
       || arg.starts_with("--config-user-dir=")) {
     LOG("Compiler option {} is unsupported", args[i]);
     return Statistic::unsupported_compiler_option;
@@ -2216,6 +2325,12 @@ process_args(Context& ctx)
 
       args_info.dependency_target =
         depfile::escape_filename(util::pstr(dep_target).str());
+    }
+  }
+
+  if (args_info.seen_fmodules_ts) {
+    if (const auto statistic = process_module_mapper(ctx, args_info)) {
+      return tl::unexpected(*statistic);
     }
   }
 

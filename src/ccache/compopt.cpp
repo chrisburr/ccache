@@ -55,6 +55,7 @@ struct CompOpt
 constexpr CompOpt compopts[] = {
   {"--Werror",                TAKES_ARG | AFFECTS_COMP                               }, // nvcc
   {"--analyzer-output",       TOO_HARD                                               }, // Clang
+  {"--compile-std-module",    TOO_HARD                                               }, // GCC
   {"--compiler-bindir",       AFFECTS_CPP | TAKES_ARG                                }, // nvcc
   {"--compiler-options",      AFFECTS_CPP | TAKES_ARG                                }, // nvcc
   {"--config",                TAKES_ARG                                              }, // Clang
@@ -132,8 +133,8 @@ constexpr CompOpt compopts[] = {
   {"-fbuild-session-file=",   TAKES_CONCAT_ARG | TAKES_PATH                          },
   {"-fmodule-header",         TOO_HARD                                               },
   {"-fmodule-map-file=",      TAKES_CONCAT_ARG | TAKES_PATH                          },
+  {"-fmodule-only",           TOO_HARD                                               },
   {"-fmodules-cache-path=",   TAKES_CONCAT_ARG | TAKES_PATH                          },
-  {"-fmodules-ts",            TOO_HARD                                               },
   {"-fno-working-directory",  AFFECTS_CPP                                            },
   {"-fplugin=libcc1plugin",   TOO_HARD                                               }, // interaction with GDB
   {"-frepo",                  TOO_HARD                                               },

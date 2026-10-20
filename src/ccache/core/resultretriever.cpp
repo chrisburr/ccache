@@ -75,6 +75,16 @@ ResultRetriever::on_embedded_file(uint8_t file_number,
       STDOUT_FILENO);
   } else if (file_type == FileType::stderr_output) {
     core::send_to_console(m_ctx, util::to_string_view(data), STDERR_FILENO);
+  } else if (file_type == FileType::module_name) {
+    const auto name = std::string(util::to_string_view(data));
+    const auto& entries = m_ctx.args_info.module_mapper_entries;
+    const auto it = entries.find(name);
+    // The module mapper is part of the result key, so this only happens for a
+    // corrupt result.
+    if (it == entries.end()) {
+      throw core::Error(FMT("Module {} not found in module mapper", name));
+    }
+    m_module_cmi_path = it->second;
   } else {
     const auto dest_path = get_dest_path(file_type);
     if (dest_path.empty()) {
@@ -83,6 +93,7 @@ ResultRetriever::on_embedded_file(uint8_t file_number,
       LOG("Not writing to {}", dest_path);
     } else {
       LOG("Writing to {}", dest_path);
+      create_parent_directory(file_type, dest_path);
       if (file_type == FileType::dependency) {
         write_dependency_file(dest_path, data);
       } else {
@@ -124,6 +135,7 @@ ResultRetriever::on_raw_file(uint8_t file_number,
 
   const auto dest_path = get_dest_path(file_type);
   if (!dest_path.empty()) {
+    create_parent_directory(file_type, dest_path);
     try {
       m_ctx.storage.local.clone_hard_link_or_copy_file(
         raw_file_path, dest_path, false);
@@ -142,6 +154,21 @@ ResultRetriever::on_raw_file(uint8_t file_number,
     LOG("Did not copy {} since destination path is unknown for type {}",
         raw_file_path,
         static_cast<result::UnderlyingFileTypeInt>(file_type));
+  }
+}
+
+void
+ResultRetriever::create_parent_directory(FileType file_type,
+                                         const fs::path& path) const
+{
+  // GCC creates the directory of a CMI if needed.
+  if (file_type != FileType::module_cmi || !path.has_parent_path()) {
+    return;
+  }
+  if (auto result = fs::create_directories(path.parent_path()); !result) {
+    throw WriteError(FMT("Failed to create directory {}: {}",
+                         path.parent_path(),
+                         result.error().message()));
   }
 }
 
@@ -220,6 +247,13 @@ ResultRetriever::get_dest_path(FileType file_type) const
       return m_ctx.args_info.output_ddi;
     }
     break;
+
+  case FileType::module_name:
+    // Should never get here.
+    break;
+
+  case FileType::module_cmi:
+    return m_module_cmi_path;
   }
 
   return {};

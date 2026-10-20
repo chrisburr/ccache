@@ -833,7 +833,7 @@ systems, ccache will fall back to use plain copying (or hard links if
 *hard_link* (*CCACHE_HARDLINK* or *CCACHE_NOHARDLINK*, see _<<Boolean values>>_ above)::
 
     If true, ccache will attempt to use hard links to store and fetch cached
-    object files. The default is false.
+    object files and CMIs of <<GCC modules>>. The default is false.
 +
 Files stored via hard links cannot be compressed, so the cache size will likely
 be significantly larger if this option is enabled. However, performance may be
@@ -1927,9 +1927,10 @@ Troubleshooting:
 
 == C++ modules
 
-Ccache does currently not support standard C++20 modules.
+Ccache supports standard C++20 modules built by GCC, see <<GCC modules>>.
+C++20 modules built by MSVC or clang-cl are not supported.
 
-There is however limited support for "`Clang modules`" (the `-fmodules` option)
+There is also limited support for "`Clang modules`" (the `-fmodules` option)
 with these requirements:
 
 * Set <<config_sloppiness,*sloppiness*>> to `modules`.
@@ -1966,6 +1967,43 @@ modules`" unless <<config_sloppiness,*sloppiness*>> is set to `modules`. Clang
 looks up implicit modules in a subdirectory layout named by hashes of compiler
 internals, so ccache can't tell which files the compilation reads.
 
+
+=== GCC modules
+
+GCC's `-fmodules-ts` (or `-fmodules` with GCC 15 and newer) is supported with
+these requirements, which are met by CMake's support for C++20 modules:
+
+* Enable both <<The direct mode,*direct mode*>> and <<The depend mode,*depend
+  mode*>>, since the CMIs of imported modules are only known from the
+  dependency file.
+* Generate a dependency file, e.g. with `-MD`.
+* Pass a module mapper file with `-fmodule-mapper=<file>`. The
+  `CXX_MODULE_MAPPER` environment variable, mapper programs, sockets and
+  `<file>?<ident>` are not supported.
+* Write a P1689 file with `-fdeps-format=p1689r5`, which requires GCC 14 or
+  newer.
+
+Compilations not meeting these requirements are counted as "`Could not use
+modules`". Named modules, module partitions and importing header units are
+supported. Compiling header units, `-fmodule-only` and `--compile-std-module`
+are not.
+
+`-fmodules` is taken to mean GCC modules if `-fmodule-mapper=` is given and the
+compiler is not Clang, and Clang modules otherwise.
+
+This is how it works:
+
+* The CMIs of imported modules listed in the dependency file are hashed like
+  include files. The P1689 file names the imported modules, whose CMIs must be
+  listed.
+* The module mapper's root directory (`$root`) is hashed relative to
+  <<config_base_dir,*base_dir*>>, but its CMI paths are hashed as written since
+  GCC records the CMI paths of imported modules in the CMI it writes. A cache
+  can therefore only be shared between build directories if the CMI paths in
+  the module mapper are relative, as with CMake.
+* The CMI of the module provided by the compiled unit is stored in the result
+  and restored on a cache hit. The provided module is named in the P1689 file,
+  and the module mapper gives its CMI path.
 
 == Sharing a local cache
 
@@ -2056,6 +2094,10 @@ the other wrapper when doing preprocessing (normally by adding `-E`).
 
 * The direct mode fails to pick up new header files in some rare scenarios. See
   _<<The direct mode>>_ above.
+* With GCC modules, the depend mode fails to pick up a new CMI of a header unit
+  not listed in the module mapper. GCC imports such a CMI instead of including
+  the header if it exists in the module mapper's root directory, e.g.
+  `,/foo.h.gcm` for `#include "foo.h"`.
 
 
 == Troubleshooting

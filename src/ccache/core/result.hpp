@@ -102,6 +102,13 @@ enum class FileType : UnderlyingFileTypeInt {
 
   // P1689 file written by GCC with -fdeps-format=p1689r5.
   p1689 = 15,
+
+  // Name of the C++ module whose CMI follows as module_cmi. The CMI path is
+  // looked up in the module mapper file.
+  module_name = 16,
+
+  // CMI written by GCC for the C++ module being compiled.
+  module_cmi = 17,
 };
 
 const char* file_type_to_string(FileType type);

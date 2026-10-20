@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // This class holds meta-information derived from the compiler arguments.
@@ -175,6 +176,24 @@ struct ArgsInfo
 
   // P1689 file written by GCC with -fdeps-format.
   std::filesystem::path output_ddi;
+
+  // Whether GCC's -fmodules-ts was given.
+  bool seen_fmodules_ts = false;
+
+  // Module mapper file given by GCC's -fmodule-mapper=.
+  std::filesystem::path module_mapper;
+
+  // Module name to CMI path from the module mapper file, with its root
+  // directory applied.
+  std::unordered_map<std::string, std::filesystem::path> module_mapper_entries;
+
+  // Root directory and module name to CMI path as written in the module mapper
+  // file.
+  std::string module_mapper_root;
+  std::unordered_map<std::string, std::string> module_mapper_written_entries;
+
+  // Normalized absolute paths of the CMIs in module_mapper_entries.
+  std::unordered_set<std::string> module_cmi_paths;
 
   // Architectures from -arch options.
   std::vector<std::string> arch_args;

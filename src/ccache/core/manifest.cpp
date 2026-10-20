@@ -433,7 +433,10 @@ Manifest::result_matches(
 
     auto hashed_files_iter = hashed_files.find(path);
     if (hashed_files_iter == hashed_files.end()) {
-      auto actual_digest = hash_source_code_file(ctx, path, fs.size);
+      // CMIs are binary files, see remember_include_file.
+      auto actual_digest = is_module_cmi(ctx, path)
+                             ? hash_binary_file(ctx, path, fs.size)
+                             : hash_source_code_file(ctx, path, fs.size);
       if (!actual_digest) {
         LOG("Failed hashing {}", path);
         return false;

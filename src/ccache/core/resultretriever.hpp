@@ -55,8 +55,12 @@ public:
 private:
   const Context& m_ctx;
   std::optional<Hash::Digest> m_result_key;
+  std::filesystem::path m_module_cmi_path;
 
   std::filesystem::path get_dest_path(result::FileType file_type) const;
+
+  void create_parent_directory(result::FileType file_type,
+                               const std::filesystem::path& path) const;
 
   void write_dependency_file(const std::filesystem::path& path,
                              std::span<const uint8_t> data);

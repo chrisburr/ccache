@@ -488,6 +488,25 @@ hash_binary_file(const Context& ctx, Hash& hash, const fs::path& path)
 }
 
 bool
+is_module_cmi(const Context& ctx, const fs::path& path)
+{
+  if (!ctx.args_info.seen_fmodules_ts) {
+    return false;
+  }
+  if (path.extension() == ".gcm"
+      || ctx.args_info.module_cmi_paths.contains(
+        util::pstr(util::lexically_normal(ctx.actual_cwd / path)).str())) {
+    return true;
+  }
+  // CMIs of indirectly imported modules are found via other CMIs, so they are
+  // not necessarily listed in the module mapper, and CMake names CMIs of
+  // modules of imported targets *.bmi. A CMI is an ELF file, unlike source
+  // files.
+  const auto magic = util::read_file_part<std::string>(path, 0, 4);
+  return magic && *magic == "\x7f" "ELF";
+}
+
+bool
 hash_command_output(Hash& hash,
                     const std::string& command,
                     const std::string& compiler)
