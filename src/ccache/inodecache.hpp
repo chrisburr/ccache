@@ -50,6 +50,10 @@ public:
     // The file was checked for temporal macros as well as embed and incbin
     // directives.
     checked_for_temporal_macros_and_directives = 2,
+    // The file is a GCC compiled module interface hashed without its README
+    // section. Increment the version number if the digest is changed, see
+    // compiler::module_cmi_digest.
+    module_cmi = 3,
   };
 
   // `min_age` specifies how old a file must be to be put in the cache. The

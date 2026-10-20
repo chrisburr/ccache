@@ -110,6 +110,9 @@ static_assert(
     InodeCache::ContentType::checked_for_temporal_macros_and_directives)
     == 2,
   "Numeric value is part of key, increment version number if changed.");
+static_assert(
+  static_cast<int>(InodeCache::ContentType::module_cmi) == 3,
+  "Numeric value is part of key, increment version number if changed.");
 
 bool
 fd_is_on_known_to_work_file_system(int fd)

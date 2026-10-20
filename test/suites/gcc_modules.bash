@@ -223,6 +223,82 @@ EOF
     expect_stat direct_cache_hit 1
     expect_stat cache_miss 2
 
+    # MinGW GCC writes CMIs that differ between compilations of the same unit
+    # in more than the README.
+    if ! $HOST_OS_WINDOWS; then
+        # ---------------------------------------------------------------------
+        TEST "Importing unit is not recompiled when only the CMI README changes"
+
+        $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom.map \
+            -c geom.cpp -o geom.o
+        backdate cmi/geom.gcm
+
+        compile_main
+        expect_stat direct_cache_hit 0
+        expect_stat cache_miss 1
+
+        # The README section records the working directory and source path.
+        mkdir -p other/cmi
+        cp geom.cpp geom.map other
+        (cd other && $COMPILER -std=c++20 -fmodules-ts \
+            -fmodule-mapper=geom.map -c geom.cpp -o geom.o)
+        if cmp -s cmi/geom.gcm other/cmi/geom.gcm; then
+            test_failed "Expected CMIs built in other directories to differ"
+        fi
+        cp other/cmi/geom.gcm cmi/geom.gcm
+        backdate cmi/geom.gcm
+
+        compile_main
+        expect_stat direct_cache_hit 1
+        expect_stat cache_miss 1
+
+        # ---------------------------------------------------------------------
+        TEST "Importing unit is not recompiled when only the README of an indirectly imported CMI changes"
+
+        # Like with CMake, the module mapper of the importing unit only lists
+        # the directly imported module, and the CMI of the indirectly imported
+        # module is named like CMake's CMIs of modules of imported targets.
+        cat <<'EOF' >shape.cpp
+export module shape;
+export import geom;
+EOF
+        cat <<'EOF' >uses_shape.cpp
+import shape;
+int main() { return geom_value(); }
+EOF
+        printf 'geom cmi/geom.bmi\n' >geom_bmi.map
+        printf 'shape cmi/shape.gcm\ngeom cmi/geom.bmi\n' >shape.map
+        printf 'shape cmi/shape.gcm\n' >uses_shape.map
+        backdate shape.cpp uses_shape.cpp geom_bmi.map shape.map uses_shape.map
+        $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom_bmi.map \
+            -c geom.cpp -o geom.o
+        $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=shape.map \
+            -c shape.cpp -o shape.o
+        backdate cmi/geom.bmi cmi/shape.gcm
+
+        $CCACHE_COMPILE -std=c++20 -fmodules-ts \
+            -fmodule-mapper=uses_shape.map -MD -fdeps-format=p1689r5 \
+            -c uses_shape.cpp -o uses_shape.o
+        expect_stat cache_miss 1
+        expect_contains uses_shape.d cmi/geom.bmi
+
+        mkdir -p other/cmi
+        cp geom.cpp geom_bmi.map other
+        (cd other && $COMPILER -std=c++20 -fmodules-ts \
+            -fmodule-mapper=geom_bmi.map -c geom.cpp -o geom.o)
+        if cmp -s cmi/geom.bmi other/cmi/geom.bmi; then
+            test_failed "Expected CMIs built in other directories to differ"
+        fi
+        cp other/cmi/geom.bmi cmi/geom.bmi
+        backdate cmi/geom.bmi
+
+        $CCACHE_COMPILE -std=c++20 -fmodules-ts \
+            -fmodule-mapper=uses_shape.map -MD -fdeps-format=p1689r5 \
+            -c uses_shape.cpp -o uses_shape.o
+        expect_stat direct_cache_hit 1
+        expect_stat cache_miss 1
+    fi
+
     # -------------------------------------------------------------------------
     TEST "Module implementation unit"
 
@@ -593,6 +669,55 @@ EOF
     compile_geom
     expect_stat direct_cache_hit 1
     expect_exists cmi/geom.gcm
+
+    # -------------------------------------------------------------------------
+    TEST "Inode cache"
+
+    export CCACHE_INODECACHE=1 CCACHE_DISABLE_INODE_CACHE_MIN_AGE=1
+    $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom.map \
+        -c geom.cpp -o geom.o
+    backdate cmi/geom.gcm
+
+    compile_main
+    expect_stat cache_miss 1
+    compile_main
+    expect_stat direct_cache_hit 1
+
+    mkdir -p other/cmi
+    cp geom.cpp geom.map other
+    (cd other && $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom.map \
+        -c geom.cpp -o geom.o)
+    cp other/cmi/geom.gcm cmi/geom.gcm
+    backdate cmi/geom.gcm
+    compile_main
+    expect_stat direct_cache_hit 2
+
+    sed_in_place 's/return 1;/return 2;/' geom.cpp
+    $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom.map \
+        -c geom.cpp -o geom.o
+    backdate cmi/geom.gcm
+    compile_main
+    expect_stat direct_cache_hit 2
+    expect_stat cache_miss 2
+
+    # -------------------------------------------------------------------------
+    TEST "file_stat_matches with a CMI of another size"
+
+    export CCACHE_SLOPPINESS="$CCACHE_SLOPPINESS,file_stat_matches"
+    export CCACHE_SLOPPINESS="$CCACHE_SLOPPINESS,file_stat_matches_ctime"
+    $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom.map \
+        -c geom.cpp -o geom.o
+    backdate cmi/geom.gcm
+    compile_main
+    expect_stat cache_miss 1
+
+    echo 'export inline int geom_value_2() { return 2; }' >>geom.cpp
+    $COMPILER -std=c++20 -fmodules-ts -fmodule-mapper=geom.map \
+        -c geom.cpp -o geom.o
+    backdate cmi/geom.gcm
+    compile_main
+    expect_stat direct_cache_hit 0
+    expect_stat cache_miss 2
 
     # -------------------------------------------------------------------------
     TEST "CMI written by another process"

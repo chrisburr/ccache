@@ -18,6 +18,7 @@
 
 #include "hashutil.hpp"
 
+#include <ccache/compiler/gcc.hpp>
 #include <ccache/config.hpp>
 #include <ccache/context.hpp>
 #include <ccache/core/exceptions.hpp>
@@ -504,6 +505,41 @@ is_module_cmi(const Context& ctx, const fs::path& path)
   // files.
   const auto magic = util::read_file_part<std::string>(path, 0, 4);
   return magic && *magic == "\x7f" "ELF";
+}
+
+std::optional<Hash::Digest>
+hash_module_cmi_file(const Context& ctx, const fs::path& path, size_t size_hint)
+{
+#ifdef INODE_CACHE_SUPPORTED
+  if (ctx.config.inode_cache()) {
+    const auto result =
+      ctx.inode_cache.get(path, InodeCache::ContentType::module_cmi);
+    if (result) {
+      return result->second;
+    }
+  }
+#endif
+
+  const auto data = util::read_file<util::Bytes>(path, size_hint);
+  if (!data) {
+    LOG("Failed to read {}: {}", path, data.error());
+    return std::nullopt;
+  }
+
+  auto digest = compiler::module_cmi_digest(*data);
+  if (!digest) {
+    LOG("Unexpected format of compiled module interface {}", path);
+    Hash hash;
+    hash.hash(*data);
+    digest = hash.digest();
+  }
+
+#ifdef INODE_CACHE_SUPPORTED
+  ctx.inode_cache.put(
+    path, InodeCache::ContentType::module_cmi, *digest, SourceCodeScanResult{});
+#endif
+
+  return digest;
 }
 
 bool

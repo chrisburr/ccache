@@ -501,7 +501,7 @@ remember_include_file(Context& ctx,
 
   if (ctx.config.direct_mode()) {
     if (module_cmi) {
-      auto ret = hash_binary_file(ctx, path2);
+      auto ret = hash_module_cmi_file(ctx, path2);
       if (!ret) {
         return tl::unexpected(Statistic::bad_input_file);
       }
