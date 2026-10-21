@@ -248,6 +248,48 @@ SUITE_clang_module_interfaces() {
     expect_stat cache_miss 1
 
     # -------------------------------------------------------------------------
+    TEST "--precompile without -c"
+
+    $CCACHE_COMPILE -std=c++20 --precompile geom.cppm -o geom.pcm
+    expect_stat cache_miss 1
+    mv geom.pcm geom.pcm.reference
+
+    $CCACHE_COMPILE -std=c++20 --precompile geom.cppm -o geom.pcm
+    expect_stat preprocessed_cache_hit 1
+    expect_stat cache_miss 1
+    expect_equal_content geom.pcm geom.pcm.reference
+
+    $CCACHE_COMPILE -std=c++20 -fmodule-file=geom=geom.pcm -c main.cpp
+    expect_exists main.o
+
+    # -------------------------------------------------------------------------
+    TEST "--precompile without -o in depend mode"
+
+    unset CCACHE_NODIRECT
+    export CCACHE_DEPEND=1
+    $CCACHE_COMPILE -std=c++20 --precompile -MD geom.cppm
+    expect_stat cache_miss 1
+    mv geom.pcm geom.pcm.reference
+    mv geom.d geom.d.reference
+
+    $CCACHE_COMPILE -std=c++20 --precompile -MD geom.cppm
+    expect_stat direct_cache_hit 1
+    expect_stat cache_miss 1
+    expect_equal_content geom.pcm geom.pcm.reference
+    expect_equal_content geom.d geom.d.reference
+
+    # The dependency target is the object file name, as without ccache.
+    $COMPILER -std=c++20 --precompile -MD -MF compiler.d geom.cppm
+    expect_equal_content geom.d compiler.d
+
+    # -------------------------------------------------------------------------
+    TEST "--precompile for other units"
+
+    # Clang preprocesses a C++ source file to standard output with --precompile.
+    $CCACHE_COMPILE -std=c++20 --precompile -x c++ geom.cppm >/dev/null
+    expect_stat called_for_link 1
+
+    # -------------------------------------------------------------------------
     TEST "No CMI for units that are not module interface units"
 
     # Clang ignores -fmodule-output when compiling other units.

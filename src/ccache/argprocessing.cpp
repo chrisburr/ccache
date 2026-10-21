@@ -1869,9 +1869,8 @@ process_args(Context& ctx)
   std::reverse(args_info.coverage_prefix_maps.begin(),
                args_info.coverage_prefix_maps.end());
 
-  const bool is_link =
-    !(state.found_c_opt || state.found_dc_opt || state.found_S_opt
-      || state.found_syntax_only || state.found_analyze_opt);
+  bool is_link = !(state.found_c_opt || state.found_dc_opt || state.found_S_opt
+                   || state.found_syntax_only || state.found_analyze_opt);
 
   if (state.input_files.empty()) {
     LOG("No input file found");
@@ -2073,6 +2072,20 @@ process_args(Context& ctx)
     args_info.actual_language.find("-header") != std::string::npos
     || is_precompiled_header(args_info.output_obj);
 
+  // With --precompile, Clang writes only the CMI of a module interface unit, by
+  // default to the source file name with extension .pcm.
+  const bool precompiling_module =
+    args_info.seen_precompile && args_info.actual_language == "c++-module";
+  if (precompiling_module) {
+    is_link = false;
+    if (output_obj_by_source) {
+      args_info.orig_output_obj =
+        util::with_extension(args_info.orig_input_file.filename(), ".pcm");
+      args_info.output_obj =
+        core::make_relative_path(ctx, args_info.orig_output_obj);
+    }
+  }
+
   if (args_info.output_is_precompiled_header && output_obj_by_source) {
     args_info.orig_output_obj = util::add_extension(
       args_info.orig_input_file, get_default_pch_file_extension(config));
@@ -2196,6 +2209,16 @@ process_args(Context& ctx)
 
     if (!args_info.dependency_target) {
       fs::path dep_target = args_info.orig_output_obj;
+
+      // Without -o, Clang's dependency target for --precompile is still the
+      // object file name, which the compiler is told since it gets -o.
+      if (precompiling_module && output_obj_by_source) {
+        dep_target =
+          util::with_extension(args_info.orig_input_file.filename(),
+                               get_default_object_file_extension(ctx.config));
+        state.add_compiler_only_arg_no_hash(
+          FMT("-MQ{}", util::pstr(dep_target).str()));
+      }
 
       // GCC and Clang behave differently when "-Wp,-M[M]D,wp.d" is used with
       // "-o" but with neither "-MMD" nor "-MT"/"-MQ": GCC uses a dependency
