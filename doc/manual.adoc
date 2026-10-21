@@ -1975,7 +1975,8 @@ Clang compiles a module interface unit with `-x c++-module` or for a source file
 with extension `.cppm`, `.ccm`, `.cxxm` or `.c++m`. The CMI it writes with
 `-fmodule-output=<path>`, or next to the object file with `-fmodule-output`, is
 stored in the result and restored on a cache hit. This is how CMake compiles
-module interface units with Clang.
+module interface units with Clang. Writing only the CMI with `--precompile` is
+supported too, but compiling a CMI to an object file is not.
 
 Clang records the absolute path of the source file in the CMI, so a CMI restored
 from a result stored in another directory refers to that directory, like debug
