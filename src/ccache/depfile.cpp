@@ -231,6 +231,23 @@ tokenize(std::string_view text)
   return tokens;
 }
 
+std::vector<std::string>
+prerequisites(std::string_view text)
+{
+  std::vector<std::string> result;
+  bool seen_colon = false;
+  for (auto& token : tokenize(text)) {
+    if (token.empty()) {
+      seen_colon = false;
+    } else if (seen_colon) {
+      result.push_back(std::move(token));
+    } else if (token == ":") {
+      seen_colon = true;
+    }
+  }
+  return result;
+}
+
 std::string
 untokenize(const std::vector<std::string>& tokens)
 {

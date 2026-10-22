@@ -22,6 +22,7 @@
 #include <ccache/argprocessing.hpp>
 #include <ccache/argsinfo.hpp>
 #include <ccache/compiler/clang.hpp>
+#include <ccache/compiler/gcc.hpp>
 #include <ccache/compiler/msvc.hpp>
 #include <ccache/compopt.hpp>
 #include <ccache/context.hpp>
@@ -91,6 +92,7 @@
 #include <span>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace fs = util::filesystem;
@@ -366,6 +368,27 @@ guess_compiler(const fs::path& path)
 #endif
 }
 
+static fs::path
+absolute_normal_path(const Context& ctx, const fs::path& path)
+{
+  return util::lexically_normal(ctx.actual_cwd / path);
+}
+
+// Return the input files listed in a dependency file.
+static std::vector<std::string>
+get_depfile_inputs(const Context& ctx, std::string_view content)
+{
+  auto inputs = depfile::prerequisites(content);
+  if (ctx.args_info.seen_fmodules_ts) {
+    // The module mapper is listed but its entries are hashed separately.
+    const auto mapper = absolute_normal_path(ctx, ctx.args_info.module_mapper);
+    std::erase_if(inputs, [&](const std::string& input) {
+      return absolute_normal_path(ctx, input) == mapper;
+    });
+  }
+  return inputs;
+}
+
 // This function hashes an include file and stores the path and hash in
 // ctx.included_files. If the include file is a PCH, cpp_hash is also updated.
 [[nodiscard]] tl::expected<void, Failure>
@@ -471,8 +494,19 @@ remember_include_file(Context& ctx,
     cpp_hash.hash(util::format_base16(file_digest));
   }
 
+  // CMIs of imported modules are binary, so don't scan them for temporal macros
+  // like source code. CMIs of indirectly imported modules are found via other
+  // CMIs and are not necessarily listed in the module mapper.
+  const bool module_cmi = is_module_cmi(ctx, path);
+
   if (ctx.config.direct_mode()) {
-    if (!is_pch) { // else: the file has already been hashed.
+    if (module_cmi) {
+      auto ret = hash_binary_file(ctx, path2);
+      if (!ret) {
+        return tl::unexpected(Statistic::bad_input_file);
+      }
+      file_digest = *ret;
+    } else if (!is_pch) { // else: the file has already been hashed.
       auto ret = hash_source_code_file(ctx, path2);
       if (!ret) {
         return tl::unexpected(Statistic::bad_input_file);
@@ -781,18 +815,9 @@ result_key_from_depfile(Context& ctx, Hash& hash)
     return tl::unexpected(Statistic::bad_input_file);
   }
 
-  bool seen_colon = false;
-  for (std::string_view token : depfile::tokenize(*file_content)) {
-    if (token.empty()) {
-      seen_colon = false;
-      continue;
-    }
-    if (seen_colon) {
-      fs::path path = core::make_relative_path(ctx, token);
-      TRY(remember_include_file(ctx, path, hash, false, &hash));
-    } else if (token == ":") {
-      seen_colon = true;
-    }
+  for (const auto& input : get_depfile_inputs(ctx, *file_content)) {
+    fs::path path = core::make_relative_path(ctx, input);
+    TRY(remember_include_file(ctx, path, hash, false, &hash));
   }
 
   // Explicitly check the .gch/.pch/.pth file as it may not be mentioned in the
@@ -1029,11 +1054,103 @@ find_coverage_file(const Context& ctx)
   return {true, found_file, found_file == mangled_form};
 }
 
+using WrittenModuleCmi = std::optional<std::pair<std::string, fs::path>>;
+
+// Check that the CMIs of the modules imported according to the P1689 file are
+// among the hashed input files, i.e. listed in the dependency file.
+static tl::expected<void, std::string>
+check_imported_cmis_hashed(const Context& ctx,
+                           const std::vector<std::string>& imported_modules)
+{
+  std::unordered_set<std::string> hashed;
+  for (const auto& [path, digest] : ctx.included_files) {
+    hashed.insert(util::pstr(absolute_normal_path(ctx, path)).str());
+  }
+  for (const auto& name : imported_modules) {
+    const auto it = ctx.args_info.module_mapper_entries.find(name);
+    if (it == ctx.args_info.module_mapper_entries.end()) {
+      return tl::unexpected(
+        FMT("imported module {} not found in module mapper", name));
+    }
+    // Like the input files, the CMI path is made relative to base_dir first.
+    const auto cmi = core::make_relative_path(ctx, it->second);
+    if (!hashed.contains(util::pstr(absolute_normal_path(ctx, cmi)).str())) {
+      return tl::unexpected(
+        FMT("CMI {} of imported module {} not listed in dependency file",
+            it->second,
+            name));
+    }
+  }
+  return {};
+}
+
+// GCC can fail to write the CMI without failing the compilation, e.g. if the
+// module mapper's root directory does not exist, so the CMIs are examined
+// before compiling to not mistake a file left by an earlier compilation for a
+// written CMI.
+static std::unordered_map<std::string, DirEntry>
+stat_module_cmis(const Context& ctx)
+{
+  std::unordered_map<std::string, DirEntry> cmis;
+  for (const auto& [name, cmi] : ctx.args_info.module_mapper_entries) {
+    DirEntry de(cmi);
+    de.refresh();
+    cmis.emplace(name, std::move(de));
+  }
+  return cmis;
+}
+
+// Find the CMI written by GCC for the module provided by the compiled unit. The
+// provided module is named in the P1689 file and its CMI path is given by the
+// module mapper.
+static tl::expected<WrittenModuleCmi, std::string>
+find_written_module_cmi(const Context& ctx,
+                        const std::unordered_map<std::string, DirEntry>& before)
+{
+  const auto content = util::read_file<std::string>(ctx.args_info.output_ddi);
+  if (!content) {
+    return tl::unexpected(
+      FMT("failed to read {}: {}", ctx.args_info.output_ddi, content.error()));
+  }
+  const auto modules = compiler::parse_p1689(*content);
+  if (!modules || modules->provided.size() > 1) {
+    return tl::unexpected(
+      FMT("unexpected content in {}", ctx.args_info.output_ddi));
+  }
+  TRY(check_imported_cmis_hashed(ctx, modules->required));
+  if (modules->provided.empty()) {
+    return WrittenModuleCmi();
+  }
+
+  const auto& provided = modules->provided.front();
+  const auto it = ctx.args_info.module_mapper_entries.find(provided);
+  if (it == ctx.args_info.module_mapper_entries.end()) {
+    return tl::unexpected(
+      FMT("provided module {} not found in module mapper", provided));
+  }
+  // GCC writes a new file and renames it to the CMI path, so a written CMI is
+  // a different file than before compiling.
+  const DirEntry de(it->second);
+  const auto& old_de = before.at(provided);
+  if (de.is_regular_file()
+      && !(old_de.exists() && de.same_inode_as(old_de)
+           && de.mtime() == old_de.mtime() && de.ctime() == old_de.ctime())) {
+    return WrittenModuleCmi(std::in_place, provided, it->second);
+  }
+  // GCC does not write a CMI with -fsyntax-only.
+  if (!ctx.args_info.expect_output_obj && !ctx.args_info.seen_fmodule_only) {
+    return WrittenModuleCmi();
+  }
+  return tl::unexpected(
+    FMT("CMI {} of provided module {} not written", it->second, provided));
+}
+
 [[nodiscard]] static bool
 write_result(Context& ctx,
              const Hash::Digest& result_key,
              const util::Bytes& stdout_data,
              const util::Bytes& stderr_data,
+             const WrittenModuleCmi& module_cmi,
              bool output_cmi_written)
 {
   core::result::Serializer serializer(ctx.config);
@@ -1062,6 +1179,18 @@ write_result(Context& ctx,
                               ctx.args_info.output_dep)) {
     LOG("Dependency file {} missing", ctx.args_info.output_dep);
     return false;
+  }
+  if (module_cmi) {
+    const auto& [name, cmi] = *module_cmi;
+    LOG("Module {} was written to {}", name, cmi);
+    // The module name must precede the CMI since ResultRetriever looks up
+    // where to write the CMI by module name.
+    serializer.add_data(core::result::FileType::module_name,
+                        util::to_span(name));
+    if (!serializer.add_file(core::result::FileType::module_cmi, cmi)) {
+      LOG("Module CMI {} missing", cmi);
+      return false;
+    }
   }
   if (!ctx.args_info.output_cmi.empty() && output_cmi_written
       && !serializer.add_file(core::result::FileType::module_cmi,
@@ -1318,6 +1447,10 @@ to_cache(Context& ctx,
     }
   }
 
+  std::unordered_map<std::string, DirEntry> module_cmis_before;
+  if (ctx.args_info.seen_fmodules_ts) {
+    module_cmis_before = stat_module_cmis(ctx);
+  }
   // Whether Clang wrote a CMI that it may not write is told by whether the
   // file changed.
   DirEntry output_cmi_before;
@@ -1381,6 +1514,16 @@ to_cache(Context& ctx,
 
   ASSERT(result_key);
 
+  WrittenModuleCmi module_cmi;
+  if (ctx.args_info.seen_fmodules_ts) {
+    auto written = find_written_module_cmi(ctx, module_cmis_before);
+    if (!written) {
+      LOG("Cannot use modules: {}", written.error());
+      return tl::unexpected(Statistic::could_not_use_modules);
+    }
+    module_cmi = std::move(*written);
+  }
+
   bool output_cmi_written = true;
   if (ctx.args_info.output_cmi_optional) {
     const DirEntry de(ctx.args_info.output_cmi);
@@ -1428,6 +1571,7 @@ to_cache(Context& ctx,
                     *result_key,
                     result->stdout_data,
                     result->stderr_data,
+                    module_cmi,
                     output_cmi_written)) {
     return tl::unexpected(Statistic::compiler_produced_no_output);
   }
@@ -1958,6 +2102,29 @@ hash_common_info(const Context& ctx, const util::Args& args, Hash& hash)
     hash.hash_delimiter("modulefile");
     if (!hash_binary_file(ctx, hash, module_file)) {
       return tl::unexpected(Statistic::bad_input_file);
+    }
+  }
+
+  // The module mapper determines which CMIs are read and written. GCC records
+  // the CMI paths of imported modules as written in the module mapper, without
+  // the root directory, in a written CMI. Those paths are therefore hashed as
+  // written while the root directory is hashed relative to base_dir.
+  if (ctx.args_info.seen_fmodules_ts) {
+    LOG("Hashing module mapper {}", ctx.args_info.module_mapper);
+    hash.hash_delimiter("modulemapperroot");
+    hash.hash(ctx.args_info.module_mapper_root.empty()
+                ? std::string()
+                : util::pstr(core::make_relative_path(
+                               ctx, ctx.args_info.module_mapper_root))
+                    .str());
+    std::vector<std::pair<std::string, std::string>> entries(
+      ctx.args_info.module_mapper_written_entries.begin(),
+      ctx.args_info.module_mapper_written_entries.end());
+    std::sort(entries.begin(), entries.end());
+    for (const auto& [name, cmi] : entries) {
+      hash.hash_delimiter("modulemapper");
+      hash.hash(name);
+      hash.hash(cmi);
     }
   }
 

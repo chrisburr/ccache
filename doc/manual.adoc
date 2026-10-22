@@ -1927,9 +1927,9 @@ Troubleshooting:
 
 == C++ modules
 
-Ccache supports standard C++20 modules built by Clang, see <<Explicit module
-files>> and <<Clang module interface units>>. C++20 modules built by MSVC or
-clang-cl are not supported.
+Ccache supports standard C++20 modules built by GCC, see <<GCC modules>>, and
+by Clang, see <<Explicit module files>> and <<Clang module interface units>>.
+C++20 modules built by MSVC or clang-cl are not supported.
 
 There is also limited support for "`Clang modules`" (the `-fmodules` option)
 with these requirements:
@@ -1981,6 +1981,46 @@ supported too, but compiling a CMI to an object file is not.
 Clang records the absolute path of the source file in the CMI, so a CMI restored
 from a result stored in another directory refers to that directory, like debug
 information does (see <<Compiling in different directories>>).
+
+
+=== GCC modules
+
+GCC's `-fmodules-ts` (or `-fmodules` with GCC 15 and newer) is supported with
+these requirements, which are met by CMake's support for C++20 modules:
+
+* Enable both <<The direct mode,*direct mode*>> and <<The depend mode,*depend
+  mode*>>, since the CMIs of imported modules are only known from the
+  dependency file.
+* Generate a dependency file, e.g. with `-MD`.
+* Pass a module mapper file with `-fmodule-mapper=<file>`. The
+  `CXX_MODULE_MAPPER` environment variable, mapper programs, sockets and
+  `<file>?<ident>` are not supported.
+* Write a P1689 file with `-fdeps-format=p1689r5`, which requires GCC 14 or
+  newer.
+
+Compilations not meeting these requirements are counted as "`Could not use
+modules`". Named modules, module partitions, importing header units and writing
+only the CMI with `-fmodule-only` are supported. Compiling header units and
+`--compile-std-module` are not.
+
+`-fmodules` is taken to mean GCC modules if the compiler is guessed to be GCC
+(see <<config_compiler_type,*compiler_type*>>), or if `-fmodule-mapper=` is
+given and the compiler is not Clang, and Clang modules otherwise. A compiler
+named `gcc` that is Clang, like on macOS, therefore doesn't cache Clang modules.
+
+This is how it works:
+
+* The CMIs of imported modules listed in the dependency file are hashed like
+  include files. The P1689 file names the imported modules, whose CMIs must be
+  listed.
+* The module mapper's root directory (`$root`) is hashed relative to
+  <<config_base_dir,*base_dir*>>, but its CMI paths are hashed as written since
+  GCC records the CMI paths of imported modules in the CMI it writes. A cache
+  can therefore only be shared between build directories if the CMI paths in
+  the module mapper are relative, as with CMake.
+* The CMI of the module provided by the compiled unit is stored in the result
+  and restored on a cache hit. The provided module is named in the P1689 file,
+  and the module mapper gives its CMI path.
 
 
 == Sharing a local cache
@@ -2072,6 +2112,10 @@ the other wrapper when doing preprocessing (normally by adding `-E`).
 
 * The direct mode fails to pick up new header files in some rare scenarios. See
   _<<The direct mode>>_ above.
+* With GCC modules, the depend mode fails to pick up a new CMI of a header unit
+  not listed in the module mapper. GCC imports such a CMI instead of including
+  the header if it exists in the module mapper's root directory, e.g.
+  `,/foo.h.gcm` for `#include "foo.h"`.
 
 
 == Troubleshooting

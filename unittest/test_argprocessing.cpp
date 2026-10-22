@@ -1903,4 +1903,163 @@ TEST_CASE("GCC -fdeps-format options")
   }
 }
 
+TEST_CASE("GCC C++ module options")
+{
+  TestContext test_context;
+
+  Context ctx;
+  ctx.config.set_depend_mode(true);
+  ctx.config.set_compiler_type(CompilerType::gcc);
+  ctx.config.set_base_dir(get_root());
+  REQUIRE(util::write_file("foo.cpp", ""));
+  REQUIRE(util::write_file("foo.map", "foo cmi/foo.gcm\n"));
+  REQUIRE(fs::create_directories("out"));
+
+  SUBCASE("CMake")
+  {
+    ctx.orig_args = Args::from_string(
+      FMT("c++ -std=c++20 -fmodules-ts -fmodule-mapper={}/foo.map -MD"
+          " -fdeps-format=p1689r5 -c foo.cpp"
+          " -o out/foo.o",
+          ctx.actual_cwd));
+
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.seen_fmodules_ts);
+    CHECK(ctx.args_info.seen_fdeps_format);
+    CHECK(ctx.args_info.module_mapper == "foo.map");
+    CHECK(ctx.args_info.module_mapper_entries.at("foo") == "cmi/foo.gcm");
+    CHECK(ctx.args_info.output_ddi == "out/foo.ddi");
+    CHECK(result->preprocessor_args.to_string()
+          == "c++ -std=c++20 -fmodules-ts -fmodule-mapper=foo.map");
+    CHECK(result->extra_args_to_hash.to_string()
+          == "-MD -fdeps-format=p1689r5 -fdeps-target=out/foo.o");
+  }
+
+  SUBCASE("-fmodules")
+  {
+    ctx.orig_args = Args::from_string(
+      "c++ -std=c++20 -fmodules -fmodule-mapper=foo.map -MD"
+      " -fdeps-format=p1689r5 -c foo.cpp");
+    REQUIRE(process_args(ctx));
+    CHECK(ctx.args_info.seen_fmodules_ts);
+  }
+
+  SUBCASE("-fmodules with a compiler of unknown type")
+  {
+    ctx.config.set_compiler_type(CompilerType::other);
+    ctx.orig_args = Args::from_string(
+      "c++ -std=c++20 -fmodules -fmodule-mapper=foo.map -MD"
+      " -fdeps-format=p1689r5 -c foo.cpp");
+    REQUIRE(process_args(ctx));
+    CHECK(ctx.args_info.seen_fmodules_ts);
+  }
+
+  SUBCASE("-fmodules without a module mapper")
+  {
+    // GCC writes the CMI to gcm.cache.
+    ctx.config.update_from_map({
+      {"sloppiness", "modules"}
+    });
+    ctx.orig_args =
+      Args::from_string("c++ -std=c++20 -fmodules -MD -c foo.cpp");
+    CHECK(process_args(ctx).error() == Statistic::could_not_use_modules);
+    CHECK(ctx.args_info.seen_fmodules_ts);
+  }
+
+  SUBCASE("-fmodules without a module mapper for a compiler of unknown type")
+  {
+    // Clang modules, since the compiler may be Clang.
+    ctx.config.set_compiler_type(CompilerType::other);
+    ctx.config.update_from_map({
+      {"sloppiness", "modules"}
+    });
+    ctx.orig_args =
+      Args::from_string("c++ -std=c++20 -fmodules -MD -c foo.cpp");
+    REQUIRE(process_args(ctx));
+    CHECK(!ctx.args_info.seen_fmodules_ts);
+  }
+
+  SUBCASE("module options via -Wp, for Clang")
+  {
+    ctx.config.set_compiler_type(CompilerType::clang);
+    ctx.orig_args =
+      Args::from_string("c++ -Wp,-fmodule-map-file=foo.map -c foo.cpp");
+    REQUIRE(process_args(ctx));
+    CHECK(!ctx.config.direct_mode());
+  }
+
+  SUBCASE("-fmodules for Clang")
+  {
+    ctx.config.set_compiler_type(CompilerType::clang);
+    ctx.orig_args = Args::from_string(
+      "c++ -std=c++20 -fmodules -fmodule-mapper=foo.map -MD"
+      " -fdeps-format=p1689r5 -c foo.cpp");
+    CHECK(process_args(ctx).error() == Statistic::could_not_use_modules);
+    CHECK(!ctx.args_info.seen_fmodules_ts);
+  }
+
+  SUBCASE("-fno-modules-ts")
+  {
+    ctx.orig_args = Args::from_string(
+      "c++ -std=c++20 -fmodules-ts -fno-modules-ts -c foo.cpp");
+    REQUIRE(process_args(ctx));
+    CHECK(!ctx.args_info.seen_fmodules_ts);
+  }
+
+  SUBCASE("unsupported")
+  {
+    for (const auto* args :
+         {"c++ -fmodule-only -c foo.cpp",
+          "c++ -fmodules-ts -fmodule-mapper=foo.map -MD -fmodule-header -c "
+          "foo.cpp",
+          "c++ -fmodules-ts -fmodule-mapper=foo.map -MD --compile-std-module"
+          " -c foo.cpp"}) {
+      CAPTURE(args);
+      ctx.orig_args = Args::from_string(args);
+      CHECK(process_args(ctx).error()
+            == Statistic::unsupported_compiler_option);
+    }
+  }
+
+  SUBCASE("-fmodule-only")
+  {
+    ctx.orig_args = Args::from_string(
+      "c++ -fmodules-ts -fmodule-mapper=foo.map -MD -fdeps-format=p1689r5"
+      " -fmodule-only -c foo.cpp -o foo.bmi");
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.seen_fmodule_only);
+    CHECK(!ctx.args_info.expect_output_obj);
+    CHECK(result->preprocessor_args.to_string()
+          == "c++ -fmodules-ts -fmodule-mapper=foo.map -fmodule-only");
+  }
+
+  SUBCASE("could not use modules")
+  {
+    for (const auto* args :
+         {"c++ -fmodules-ts -fmodule-mapper=foo.map -c foo.cpp",
+          "c++ -fmodules-ts -fmodule-mapper=foo.map -MD -c foo.cpp",
+          "c++ -fmodules-ts -MD -c foo.cpp",
+          "c++ -fmodules-ts '-fmodule-mapper=foo.map?ident' -MD -c foo.cpp",
+          "c++ -Wp,-fmodules-ts -c foo.cpp",
+          "c++ -Wp,-DX,-fmodule-mapper=foo.map -c foo.cpp",
+          "c++ -Xpreprocessor -fmodules -c foo.cpp",
+          "c++ -Xpreprocessor -fno-modules-ts -c foo.cpp"}) {
+      CAPTURE(args);
+      ctx.orig_args = Args::from_string(args);
+      CHECK(process_args(ctx).error() == Statistic::could_not_use_modules);
+    }
+  }
+
+  SUBCASE("could not use modules without direct mode")
+  {
+    ctx.config.set_direct_mode(false);
+    ctx.orig_args = Args::from_string(
+      "c++ -fmodules-ts -fmodule-mapper=foo.map -MD -fdeps-format=p1689r5"
+      " -c foo.cpp");
+    CHECK(process_args(ctx).error() == Statistic::could_not_use_modules);
+  }
+}
+
 TEST_SUITE_END();

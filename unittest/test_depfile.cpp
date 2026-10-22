@@ -479,6 +479,16 @@ TEST_CASE("depfile::tokenize")
   }
 }
 
+TEST_CASE("depfile::prerequisites")
+{
+  CHECK(depfile::prerequisites("").empty());
+  CHECK(depfile::prerequisites("foo.o:\n").empty());
+  CHECK(depfile::prerequisites("foo.o: foo.c \\\n foo.h\nbar.h:\n")
+        == std::vector<std::string>{"foo.c", "foo.h"});
+  CHECK(depfile::prerequisites("foo.o bar.o: a\\ b.h\nbaz.o: c.h\n")
+        == std::vector<std::string>{"a b.h", "c.h"});
+}
+
 TEST_CASE("depfile::untokenize")
 {
   CHECK(depfile::untokenize({}) == "");
