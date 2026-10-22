@@ -99,6 +99,9 @@ enum class FileType : UnderlyingFileTypeInt {
   // sarif output files produced by MSVC /experimental:log or GCC
   // -fdiagnostics-{add,set}-output=sarif:file=...
   sarif = 14,
+
+  // CMI written by Clang for the C++ module interface unit being compiled.
+  module_cmi = 15,
 };
 
 const char* file_type_to_string(FileType type);

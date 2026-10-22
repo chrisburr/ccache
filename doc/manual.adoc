@@ -1927,9 +1927,11 @@ Troubleshooting:
 
 == C++ modules
 
-Ccache does currently not support standard C++20 modules.
+Ccache supports standard C++20 modules built by Clang, see <<Explicit module
+files>> and <<Clang module interface units>>. C++20 modules built by MSVC or
+clang-cl are not supported.
 
-There is however limited support for "`Clang modules`" (the `-fmodules` option)
+There is also limited support for "`Clang modules`" (the `-fmodules` option)
 with these requirements:
 
 * Set <<config_sloppiness,*sloppiness*>> to `modules`.
@@ -1965,6 +1967,19 @@ works for the options that tell ccache which files those are:
 modules`" unless <<config_sloppiness,*sloppiness*>> is set to `modules`. Clang
 looks up implicit modules in a subdirectory layout named by hashes of compiler
 internals, so ccache can't tell which files the compilation reads.
+
+
+=== Clang module interface units
+
+Clang compiles a module interface unit with `-x c++-module` or for a source file
+with extension `.cppm`, `.ccm`, `.cxxm` or `.c++m`. The CMI it writes with
+`-fmodule-output=<path>`, or next to the object file with `-fmodule-output`, is
+stored in the result and restored on a cache hit. This is how CMake compiles
+module interface units with Clang.
+
+Clang records the absolute path of the source file in the CMI, so a CMI restored
+from a result stored in another directory refers to that directory, like debug
+information does (see <<Compiling in different directories>>).
 
 
 == Sharing a local cache

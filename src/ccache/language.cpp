@@ -86,6 +86,7 @@ const struct
   {"c++",                      {.preprocessed = false}},
   {"c++-cpp-output",           {.preprocessed = true} },
   {"c++-header",               {.preprocessed = false}},
+  {"c++-module",               {.preprocessed = false}}, // Clang
   {"cu",                       {.preprocessed = false}}, // NVCC
   {"cuda",                     {.preprocessed = false}}, // Clang
   {"hip",                      {.preprocessed = false}},
@@ -112,6 +113,11 @@ language_for_file(const fs::path& path, CompilerType compiler_type)
   if (ext == ".cu" && compiler_type == CompilerType::clang) {
     // Special case: Clang maps .cu to cuda.
     return "cuda";
+  }
+  if ((ext == ".cppm" || ext == ".ccm" || ext == ".cxxm" || ext == ".c++m")
+      && compiler_type == CompilerType::clang) {
+    // Special case: Clang's extensions for C++ module interface units.
+    return "c++-module";
   }
   for (size_t i = 0; k_ext_lang_table[i].extension; ++i) {
     if (k_ext_lang_table[i].extension == ext) {

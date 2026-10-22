@@ -214,6 +214,9 @@ ResultRetriever::get_dest_path(FileType file_type) const
 
   case FileType::sarif:
     return m_ctx.args_info.output_sarif;
+
+  case FileType::module_cmi:
+    return m_ctx.args_info.output_cmi;
   }
 
   return {};

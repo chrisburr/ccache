@@ -1769,4 +1769,67 @@ TEST_CASE("-fprebuilt-implicit-modules is cacheable with modules sloppiness")
   CHECK(result);
 }
 
+TEST_CASE("Clang -fmodule-output options")
+{
+  TestContext test_context;
+
+  Context ctx;
+  ctx.config.set_compiler_type(CompilerType::clang);
+  ctx.config.set_base_dir(get_root());
+  REQUIRE(util::write_file("foo.cppm", ""));
+  REQUIRE(fs::create_directories("out"));
+
+  SUBCASE("-fmodule-output=")
+  {
+    ctx.orig_args = Args::from_string(
+      FMT("clang++ -std=c++20 -x c++-module -fmodule-output={}/out/foo.pcm -c"
+          " foo.cppm",
+          ctx.actual_cwd));
+
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.actual_language == "c++-module");
+    CHECK(ctx.args_info.output_cmi == fs::path("out") / "foo.pcm");
+    CHECK(result->preprocessor_args.to_string()
+          == "clang++ -std=c++20 -x c++-module");
+    CHECK(result->extra_args_to_hash.to_string().empty());
+    CHECK(result->compiler_args.to_string().find(
+            FMT(" -fmodule-output={} ", ctx.args_info.output_cmi))
+          != std::string::npos);
+  }
+
+  SUBCASE("-fmodule-output")
+  {
+    ctx.orig_args =
+      Args::from_string("clang++ -fmodule-output -c foo.cppm -o out/foo.o");
+    REQUIRE(process_args(ctx));
+    CHECK(ctx.args_info.actual_language == "c++-module");
+    CHECK(ctx.args_info.output_cmi == "out/foo.pcm");
+  }
+
+  SUBCASE("not a module interface unit")
+  {
+    REQUIRE(util::write_file("foo.cpp", ""));
+    ctx.orig_args =
+      Args::from_string("clang++ -fmodule-output=foo.pcm -c foo.cpp");
+    REQUIRE(process_args(ctx));
+    CHECK(ctx.args_info.output_cmi.empty());
+  }
+
+  SUBCASE("-fsyntax-only")
+  {
+    ctx.orig_args = Args::from_string(
+      "clang++ -fmodule-output=foo.pcm -fsyntax-only foo.cppm");
+    REQUIRE(process_args(ctx));
+    CHECK(ctx.args_info.output_cmi.empty());
+  }
+
+  SUBCASE(".cppm is not a C++ module interface unit for GCC")
+  {
+    ctx.config.set_compiler_type(CompilerType::gcc);
+    ctx.orig_args = Args::from_string("g++ -c foo.cppm");
+    CHECK(process_args(ctx).error() == Statistic::unsupported_source_language);
+  }
+}
+
 TEST_SUITE_END();

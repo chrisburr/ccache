@@ -682,6 +682,12 @@ process_option_arg(const Context& ctx,
     return Statistic::none;
   }
 
+  if (arg == "--precompile") {
+    args_info.seen_precompile = true;
+    state.add_common_arg(args[i]);
+    return Statistic::none;
+  }
+
   // These are always too hard.
   if (compopt_too_hard(arg) || arg.starts_with("-fdump-")
       || arg.starts_with("-MJ") || arg.starts_with("--config-system-dir=")
@@ -920,6 +926,23 @@ process_option_arg(const Context& ctx,
   if (arg == "--analyze") {
     state.add_common_arg(args[i]);
     state.found_analyze_opt = true;
+    return Statistic::none;
+  }
+
+  // GCC's and Clang's alias of -x, handled the same way.
+  if (arg == "--language" || arg.starts_with("--language=")) {
+    if (arg == "--language" && i == args.size() - 1) {
+      LOG("Missing argument to {}", args[i]);
+      return Statistic::bad_compiler_arguments;
+    }
+    const std::string language =
+      arg == "--language" ? args[i + 1] : arg.substr(11);
+    if (arg == "--language") {
+      i++;
+    }
+    if (state.input_files.empty()) {
+      state.explicit_language = language;
+    }
     return Statistic::none;
   }
 
@@ -1330,6 +1353,19 @@ process_option_arg(const Context& ctx,
     }
     args_info.module_files.emplace_back(value);
     state.add_common_arg(args[i]);
+    return Statistic::none;
+  }
+
+  // CMI written by Clang when compiling a module interface unit.
+  if (arg == "-fmodule-output") {
+    args_info.seen_fmodule_output = true;
+    state.add_compiler_only_arg_no_hash(args[i]);
+    return Statistic::none;
+  }
+  if (arg.starts_with("-fmodule-output=")) {
+    args_info.output_cmi = core::make_relative_path(ctx, arg.substr(16));
+    state.add_compiler_only_arg_no_hash(
+      FMT("-fmodule-output={}", args_info.output_cmi));
     return Statistic::none;
   }
 
@@ -2188,6 +2224,30 @@ process_args(Context& ctx)
       args_info.dependency_target =
         depfile::escape_filename(util::pstr(dep_target).str());
     }
+  }
+
+  // Clang only writes a CMI for a module interface unit, and not with
+  // -fsyntax-only.
+  if (args_info.actual_language != "c++-module"
+      || !args_info.expect_output_obj) {
+    args_info.output_cmi.clear();
+  } else if (args_info.output_cmi.empty() && !args_info.seen_precompile) {
+    // Without a path, Clang writes the CMI next to the object file, with
+    // -fmodule-output and from Clang 22 on also without it (unless given
+    // -fno-modules-reduced-bmi). Clang 22 and later write it to the current
+    // directory instead with -S, and also without -o, for which Clang 21 and
+    // earlier write it next to the source file.
+    if (state.found_S_opt
+        || (output_obj_by_source && args_info.seen_fmodule_output
+            && args_info.input_file.has_parent_path())) {
+      LOG("Unsupported CMI location of a C++ module interface unit");
+      return tl::unexpected(Statistic::could_not_use_modules);
+    }
+    args_info.output_cmi = util::with_extension(args_info.output_obj, ".pcm");
+    args_info.output_cmi_optional = !args_info.seen_fmodule_output;
+  }
+  if (args_info.seen_precompile) {
+    args_info.output_cmi_optional = true;
   }
 
   if (args_info.generating_stackusage) {
