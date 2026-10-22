@@ -172,8 +172,8 @@ struct ArgsInfo
   // object file path with extension .pcm.
   bool seen_fmodule_output = false;
 
-  // CMI (BMI in Clang's terms) written by Clang with -fmodule-output for a
-  // module interface unit.
+  // CMI (BMI in Clang's terms) written by Clang with -fmodule-output, or IFC
+  // written by MSVC with -ifcOutput, for a module interface unit.
   std::filesystem::path output_cmi;
 
   // Whether Clang's --precompile was given, with which Clang writes the CMI to
@@ -181,8 +181,12 @@ struct ArgsInfo
   // path.
   bool seen_precompile = false;
 
-  // Whether Clang may not write output_cmi, depending on its version.
+  // Whether the compiler may not write output_cmi: Clang depending on its
+  // version, and MSVC for a unit that is not a module interface unit.
   bool output_cmi_optional = false;
+
+  // Whether MSVC's -interface or -internalPartition was given.
+  bool seen_msvc_module_interface = false;
 
   // Architectures from -arch options.
   std::vector<std::string> arch_args;

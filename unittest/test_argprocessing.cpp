@@ -892,32 +892,101 @@ TEST_CASE("MSVC C++20 module options")
   ctx.config.set_compiler_type(CompilerType::msvc);
 
   REQUIRE(util::write_file("foo.cppm", ""));
-  REQUIRE(util::write_file("foo.ifc", ""));
+  REQUIRE(util::write_file("foo.ixx", ""));
+  REQUIRE(util::write_file("bar.ifc", ""));
+  REQUIRE(fs::create_directory("ifc"));
 
-  for (const auto& options : {"/interface /ifcOutput foo.ifc",
-                              "-ifcOutput foo.ifc",
-                              "/ifcOutput:foo.ifc",
-                              "/reference bar=bar.ifc",
-                              "/headerUnit:quote bar.h=bar.h.ifc",
-                              "/headerName:angle bar.h",
-                              "/exportHeader",
-                              "/ifcSearchDir ifc",
-                              "/ifcSearchDirifc",
-                              "/experimental:module",
-                              "/module:reference foo.ifc"}) {
-    CAPTURE(options);
-    ctx.orig_args =
-      Args::from_string(FMT("cl.exe /std:c++20 {} /TP /c foo.cppm", options));
+  SUBCASE("Interface unit")
+  {
+    // An IFC file in the current directory is hashed, but not the one written.
+    REQUIRE(util::write_file("foo.ifc", ""));
+    ctx.orig_args = Args::from_string(
+      "cl.exe /std:c++20 /interface /ifcOutput foo.ifc /TP /c foo.cppm");
     const auto result = process_args(ctx);
-    REQUIRE(!result);
-    CHECK(result.error() == Statistic::could_not_use_modules);
+    REQUIRE(result);
+    CHECK(ctx.args_info.output_cmi == "foo.ifc");
+    CHECK(!ctx.args_info.output_cmi_optional);
+    CHECK(ctx.args_info.searched_module_files
+          == std::vector<fs::path>{"./bar.ifc"});
+    CHECK(result->preprocessor_args.to_string()
+          == "cl.exe /std:c++20 /interface /TP");
+    CHECK(result->compiler_args.to_string()
+          == "cl.exe /std:c++20 /interface /ifcOutput foo.ifc /TP /c");
   }
 
-  ctx.orig_args = Args::from_string("cl.exe /std:c++20 /TP /c foo.cppm");
-  CHECK(process_args(ctx));
-  // MSVC resolves an import to an IFC file in the current directory.
-  CHECK(ctx.args_info.searched_module_files
-        == std::vector<fs::path>{"./foo.ifc"});
+  SUBCASE("Implementation unit")
+  {
+    // A unit that is not an interface unit reads the IFC file of its module.
+    REQUIRE(util::write_file("foo.ifc", ""));
+    ctx.orig_args =
+      Args::from_string("cl.exe /std:c++20 /ifcOutput foo.ifc /TP /c foo.cppm");
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.output_cmi == "foo.ifc");
+    CHECK(ctx.args_info.output_cmi_optional);
+    CHECK(ctx.args_info.searched_module_files
+          == std::vector<fs::path>{"./bar.ifc", "./foo.ifc"});
+  }
+
+  SUBCASE(".ixx file")
+  {
+    ctx.orig_args =
+      Args::from_string("cl.exe /std:c++20 -ifcOutput foo.ifc /c foo.ixx");
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.actual_language == "c++");
+    CHECK(ctx.args_info.output_cmi == "foo.ifc");
+    CHECK(!ctx.args_info.output_cmi_optional);
+  }
+
+  SUBCASE("Importing unit")
+  {
+    ctx.orig_args = Args::from_string(
+      "cl.exe /std:c++20 /reference bar=bar.ifc -reference bar.ifc /TP /c"
+      " foo.cppm");
+    const auto result = process_args(ctx);
+    REQUIRE(result);
+    CHECK(ctx.args_info.output_cmi.empty());
+    CHECK(ctx.args_info.module_files
+          == std::vector<fs::path>{"bar.ifc", "bar.ifc"});
+    // MSVC resolves an import to an IFC file in the current directory.
+    CHECK(ctx.args_info.searched_module_files
+          == std::vector<fs::path>{"./bar.ifc"});
+    CHECK(result->preprocessor_args.to_string()
+          == "cl.exe /std:c++20 /reference bar=bar.ifc -reference bar.ifc"
+             " /TP");
+  }
+
+  SUBCASE("Unsupported")
+  {
+    for (const auto& options : {"/interface /TP",
+                                "/ifcOutput ifc",
+                                "/ifcOutput ifc/",
+                                "/ifcOutput:foo.ifc",
+                                "/reference:bar.ifc",
+                                "/headerUnit:quote bar.h=bar.h.ifc",
+                                "/headerName:angle bar.h",
+                                "/exportHeader",
+                                "/ifcSearchDir ifc",
+                                "/ifcSearchDirifc",
+                                "/experimental:module",
+                                "/module:reference bar.ifc"}) {
+      CAPTURE(options);
+      ctx.orig_args =
+        Args::from_string(FMT("cl.exe /std:c++20 {} /c foo.ixx", options));
+      const auto result = process_args(ctx);
+      REQUIRE(!result);
+      CHECK(result.error() == Statistic::could_not_use_modules);
+    }
+  }
+
+  SUBCASE("Missing argument")
+  {
+    ctx.orig_args = Args::from_string("cl.exe /TP /c foo.cppm /reference");
+    const auto result = process_args(ctx);
+    REQUIRE(!result);
+    CHECK(result.error() == Statistic::bad_compiler_arguments);
+  }
 }
 
 TEST_CASE("MSVC /experimental:log")

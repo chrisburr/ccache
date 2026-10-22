@@ -119,6 +119,10 @@ language_for_file(const fs::path& path, CompilerType compiler_type)
     // Special case: Clang's extensions for C++ module interface units.
     return "c++-module";
   }
+  if (ext == ".ixx" && compiler_type == CompilerType::msvc) {
+    // Special case: MSVC's extension for C++ module interface units.
+    return "c++";
+  }
   for (size_t i = 0; k_ext_lang_table[i].extension; ++i) {
     if (k_ext_lang_table[i].extension == ext) {
       return k_ext_lang_table[i].language;

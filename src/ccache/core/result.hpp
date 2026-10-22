@@ -100,7 +100,8 @@ enum class FileType : UnderlyingFileTypeInt {
   // -fdiagnostics-{add,set}-output=sarif:file=...
   sarif = 14,
 
-  // CMI written by Clang for the C++ module interface unit being compiled.
+  // CMI written by Clang, or IFC written by MSVC, for the C++ module interface
+  // unit being compiled.
   module_cmi = 15,
 };
 

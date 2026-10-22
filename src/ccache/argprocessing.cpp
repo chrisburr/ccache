@@ -904,10 +904,51 @@ process_option_arg(const Context& ctx,
     return Statistic::none;
   }
 
-  // The IFC files that MSVC writes are not stored in the cache, and the IFC
-  // files of imported modules and header units are not part of the hash.
   if (config.compiler_type() == CompilerType::msvc) {
     if (const auto* option = find_msvc_module_option(arg)) {
+      if (arg == "-interface" || arg == "-internalPartition") {
+        args_info.seen_msvc_module_interface = true;
+        state.add_common_arg(args[i]);
+        return Statistic::none;
+      }
+
+      if (arg == "-ifcOutput" || arg == "-reference") {
+        if (i == args.size() - 1) {
+          LOG("Missing argument to {}", args[i]);
+          return Statistic::bad_compiler_arguments;
+        }
+        const std::string option_arg = args[i];
+        const std::string value = args[++i];
+
+        // IFC written for the module interface unit being compiled.
+        if (arg == "-ifcOutput") {
+          // Without a file name, MSVC names the IFC after the module.
+          if (value.ends_with('/') || value.ends_with('\\')
+              || DirEntry(value).is_directory()) {
+            LOG("Unsupported IFC location {}", value);
+            return Statistic::could_not_use_modules;
+          }
+          args_info.output_cmi = core::make_relative_path(ctx, value);
+          state.add_compiler_only_arg_no_hash(option_arg);
+          state.add_compiler_only_arg_no_hash(
+            util::pstr(args_info.output_cmi).str());
+          return Statistic::none;
+        }
+
+        // -reference <name>=<path> or -reference <path> for an imported
+        // module.
+        const auto [name, path] = util::split_once(value, '=');
+        const std::string_view file = path ? *path : name;
+        args_info.module_files.emplace_back(file);
+        const auto relpath = core::make_relative_path(ctx, file);
+        state.add_common_arg(option_arg);
+        state.add_common_arg(path ? FMT("{}={}", name, relpath)
+                                  : util::pstr(relpath).str());
+        return Statistic::none;
+      }
+
+      // The IFC files of header units, and the IFC files that are searched
+      // for, are not part of the hash.
       LOG("Compiler option {} is unsupported", args[i]);
       // Skip the argument so that an existing IFC file is not taken as an
       // input file.
@@ -2313,10 +2354,24 @@ process_args(Context& ctx)
     }
   }
 
-  // Clang only writes a CMI for a module interface unit, and not with
-  // -fsyntax-only.
-  if (args_info.actual_language != "c++-module"
-      || !args_info.expect_output_obj) {
+  if (ctx.config.compiler_type() == CompilerType::msvc) {
+    // MSVC compiles a .ixx file as a module interface unit.
+    const bool module_interface =
+      args_info.seen_msvc_module_interface
+      || util::to_lowercase(util::pstr(args_info.input_file.extension()).str())
+           == ".ixx";
+    if (!args_info.expect_output_obj) {
+      args_info.output_cmi.clear();
+    } else if (module_interface && args_info.output_cmi.empty()) {
+      LOG("Unsupported IFC location of a C++ module interface unit");
+      return tl::unexpected(Statistic::could_not_use_modules);
+    } else if (!module_interface) {
+      args_info.output_cmi_optional = true;
+    }
+  } else if (args_info.actual_language != "c++-module"
+             || !args_info.expect_output_obj) {
+    // Clang only writes a CMI for a module interface unit, and not with
+    // -fsyntax-only.
     args_info.output_cmi.clear();
   } else if (args_info.output_cmi.empty() && !args_info.seen_precompile) {
     // Without a path, Clang writes the CMI next to the object file, with
@@ -2340,13 +2395,20 @@ process_args(Context& ctx)
   if (ctx.config.compiler_type() == CompilerType::msvc) {
     // Without -reference, MSVC resolves an import to an IFC file in the current
     // directory. The command line does not say which of those files the
-    // compilation reads, so all of them are hashed.
+    // compilation reads, so all of them are hashed, except the one that a
+    // module interface unit writes. Other units only read the file given by
+    // -ifcOutput, if any, e.g. a module implementation unit importing its
+    // module.
     auto module_files = find_module_files(".", ".ifc");
     if (!module_files) {
       return tl::unexpected(module_files.error());
     }
     for (auto& module_file : *module_files) {
-      args_info.searched_module_files.push_back(std::move(module_file));
+      if (args_info.output_cmi.empty() || args_info.output_cmi_optional
+          || !DirEntry(module_file)
+                .same_inode_as(DirEntry(args_info.output_cmi))) {
+        args_info.searched_module_files.push_back(std::move(module_file));
+      }
     }
   }
 

@@ -1927,9 +1927,9 @@ Troubleshooting:
 
 == C++ modules
 
-Ccache supports standard C++20 modules built by Clang, see <<Explicit module
-files>> and <<Clang module interface units>>. C++20 modules built by MSVC or
-clang-cl are not supported.
+Ccache supports standard C++20 modules built by Clang and MSVC, see <<Explicit
+module files>>, <<Clang module interface units>> and <<MSVC modules>>. C++20
+modules built by clang-cl are not supported.
 
 There is also limited support for "`Clang modules`" (the `-fmodules` option)
 with these requirements:
@@ -1968,12 +1968,6 @@ modules`" unless <<config_sloppiness,*sloppiness*>> is set to `modules`. Clang
 looks up implicit modules in a subdirectory layout named by hashes of compiler
 internals, so ccache can't tell which files the compilation reads.
 
-MSVC compilations that build or import modules or header units (options such
-as `/interface`, `/ifcOutput`, `/reference` and `/headerUnit`) are counted as
-"`Could not use modules`".
-Without `/reference`, MSVC resolves an import to an IFC file in the current
-directory, so ccache hashes all `.ifc` files there.
-
 
 === Clang module interface units
 
@@ -1987,6 +1981,28 @@ supported too, but compiling a CMI to an object file is not.
 Clang records the absolute path of the source file in the CMI, so a CMI restored
 from a result stored in another directory refers to that directory, like debug
 information does (see <<Compiling in different directories>>).
+
+
+=== MSVC modules
+
+MSVC compiles a module interface unit with `/interface` or `/internalPartition`,
+or for a source file with extension `.ixx`. The IFC file it writes to the file
+given by `/ifcOutput` is stored in the result and restored on a cache hit. A
+module interface unit without `/ifcOutput`, or with a directory as its value, is
+counted as "`Could not use modules`", since MSVC then names the IFC file after
+the module. Like the object file, an IFC file restored from a result stored in
+another directory refers to the source file in that directory (see
+<<Compiling in different directories>>).
+
+Ccache hashes the IFC files given by `/reference`, so that a consumer is
+recompiled when a module it imports changes. This is how CMake compiles C++20
+modules with MSVC. Without `/reference`, MSVC resolves an import to an IFC file
+in the current directory, so ccache also hashes all `.ifc` files there, except
+the one the compilation writes.
+
+Compilations that build or import header units, or that search for IFC files
+(options such as `/exportHeader`, `/headerUnit`, `/ifcMap` and
+`/ifcSearchDir`), are counted as "`Could not use modules`".
 
 
 == Sharing a local cache
